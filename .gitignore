@@ -1,0 +1,38 @@
+# --- Android / Gradle ---
+app-android/build/
+app-android/app/build/
+app-android/.gradle/
+app-android/.idea/
+app-android/captures/
+app-android/.externalNativeBuild/
+app-android/.cxx/
+*.iml
+
+# SDK 경로는 PC마다 다르다. 각자 Android Studio가 자동으로 만들어준다.
+local.properties
+
+# 빌드 산출물
+*.apk
+*.aab
+*.aar
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+env/
+*.egg-info/
+.coverage
+htmlcov/
+
+# --- 에디터 / OS ---
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- 기타 ---
+*.log

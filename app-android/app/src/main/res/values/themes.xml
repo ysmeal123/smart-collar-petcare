@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 프레임워크 테마를 그대로 쓴다.
+         AppCompat / Material Components 의존성을 추가하지 않기 위해서다.
+         실제 UI는 전부 Compose가 그린다. -->
+    <style name="Theme.PetCare" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">#0D1117</item>
+        <item name="android:navigationBarColor">#0D1117</item>
+        <item name="android:windowBackground">#0D1117</item>
+    </style>
+</resources>
