@@ -293,6 +293,7 @@ TARGET_WEIGHT_RATIO = {
 # ---------------------------------------------------------------------------
 
 CONFIDENCE_GATE = 0.60        # 이 미만 이벤트는 버린다
+STEPS_PER_WALK_SEC = 1.2      # 걷기 1초당 걸음 수. 보수계가 없을 때만 쓴다
 WEAR_RATIO_GATE = 0.60        # 이 미만인 날은 통계에서 제외
 BASELINE_DAYS = 30            # baseline 산출 구간
 RECENT_DAYS = 7               # 최근값 구간 (중앙값 -> 임펄스 자동 제거)

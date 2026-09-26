@@ -48,6 +48,7 @@ from core.constants import (
     NIGHT_HOURS,
     Z_ENTER,
 )
+from core.aggregate import build_daily_summary
 from core.models import HealthAxis
 from core.models import (
     Allergen,
@@ -128,7 +129,6 @@ DURATION_RANGE: dict[BehaviorType, tuple[float, float]] = {
     BehaviorType.POSTURE_CHANGE: (2.0, 6.0),
 }
 
-STEPS_PER_WALK_SEC = 1.2
 
 # 크기에 따라 기본 활동량이 다르다. 대형견이 더 많이 걷고 뛴다.
 SIZE_ACTIVITY_SCALE = {
@@ -461,67 +461,15 @@ def summarize_day(
     weight: float | None = None, intake: tuple[int, int] = (0, 0),
 ) -> DailySummary:
     """
-    하루치 이벤트를 앱/알고리즘이 쓰는 형태로 집계한다.
+    하루치 이벤트를 알고리즘 입력으로 집계한다.
 
-    신호 정제 1단계(신뢰도 게이팅)를 여기서 적용한다.
-    confidence 미달 이벤트는 집계에서 빠지고, 버린 비율만 기록해둔다.
+    집계 자체는 core.aggregate 가 한다. 실제 목줄에서 올라온 이벤트도
+    같은 함수를 타므로, 이 생성기로 하는 검증이 곧 실제 파이프라인 검증이 된다.
     """
-    total = len(events)
-    kept = [e for e in events if e.confidence >= CONFIDENCE_GATE]
-    low_ratio = 1.0 - (len(kept) / total) if total else 0.0
-
-    activity = [0] * 24
-    scratch = [0] * 24
-    shake = [0] * 24
-    posture = [0] * 24
-
-    walk_sec = run_sec = 0.0
-
-    for e in kept:
-        h = e.ts.hour
-        if e.type is BehaviorType.SCRATCH:
-            scratch[h] += 1
-        elif e.type is BehaviorType.SHAKE:
-            shake[h] += 1
-        elif e.type is BehaviorType.POSTURE_CHANGE:
-            posture[h] += 1
-        elif e.type is BehaviorType.WALK:
-            activity[h] += int(e.duration_s)
-            walk_sec += e.duration_s
-        elif e.type is BehaviorType.RUN:
-            activity[h] += int(e.duration_s)
-            run_sec += e.duration_s
-
-    # 수면: 22~07시 창에서 활동과 뒤척임을 빼서 실제 수면 시간을 추정
-    night_activity_sec = sum(activity[h] for h in SLEEP_HOURS)
-    restless = sum(posture[h] for h in SLEEP_HOURS)
-    awake_min = night_activity_sec / 60.0 + restless * 1.5
-    total_sleep = int(np.clip(540 - awake_min, 180, 540))
-    night_wake = sum(1 for h in SLEEP_HOURS if activity[h] > 60)
-
-    return DailySummary(
-        date=day_date,
-        hourly=HourlyBins(
-            activity_sec=activity, scratch=scratch,
-            shake=shake, posture_change=posture,
-        ),
-        sleep=SleepSummary(
-            total_min=total_sleep,
-            restless_count=restless,
-            night_wake_count=night_wake,
-        ),
-        summary=DaySummary(
-            steps=int(walk_sec * STEPS_PER_WALK_SEC),
-            walk_sec=int(walk_sec),
-            run_sec=int(run_sec),
-            walk_min=int(walk_sec / 60),
-            run_min=int(run_sec / 60),
-            scratch_total=sum(scratch),
-            scratch_night=sum(scratch[h] for h in NIGHT_HOURS),
-            shake_total=sum(shake),
-        ),
+    return build_daily_summary(
+        day_date,
+        events,
         wear_ratio=noise.wear_ratio,
-        low_confidence_ratio=round(low_ratio, 3),
         weight_kg=weight,
         food_offered_g=intake[0],
         food_eaten_g=intake[1],

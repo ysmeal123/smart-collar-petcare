@@ -19,12 +19,16 @@ from core.constants import CARTRIDGES, FOODS
 from core.inference import PrescriptionState
 from core.models import DailySummary, DogProfile, Prescription
 from core.prescribe import prescribe
+from api.ingest import router as device_router
 
 app = FastAPI(
     title="Pet Nutrition API",
     description="스마트 목줄 행동 데이터 기반 사료·영양제 처방",
     version="0.1.0",
 )
+
+# 기기(목줄·밥통) 및 실데이터 엔드포인트
+app.include_router(device_router)
 
 
 class PrescribeRequest(BaseModel):

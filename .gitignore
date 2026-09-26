@@ -36,3 +36,8 @@ desktop.ini
 
 # --- 기타 ---
 *.log
+
+# 시드로 언제든 다시 만들 수 있다 (python seed_live.py)
+*.db
+*.db-wal
+*.db-shm

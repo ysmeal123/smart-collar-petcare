@@ -159,7 +159,7 @@
         "scratch_night": 1,
         "shake_total": 20
       },
-      "wear_ratio": 0.9377600073525006,
+      "wear_ratio": 0.938,
       "low_confidence_ratio": 0.085,
       "weight_kg": 28.97,
       "food_offered_g": 384,
@@ -290,7 +290,7 @@
         "scratch_night": 2,
         "shake_total": 19
       },
-      "wear_ratio": 0.9811239601760166,
+      "wear_ratio": 0.981,
       "low_confidence_ratio": 0.027,
       "weight_kg": 28.07,
       "food_offered_g": 384,
@@ -421,7 +421,7 @@
         "scratch_night": 4,
         "shake_total": 16
       },
-      "wear_ratio": 0.935740686929979,
+      "wear_ratio": 0.936,
       "low_confidence_ratio": 0.098,
       "weight_kg": null,
       "food_offered_g": 384,
@@ -552,7 +552,7 @@
         "scratch_night": 1,
         "shake_total": 12
       },
-      "wear_ratio": 0.9408842014479634,
+      "wear_ratio": 0.941,
       "low_confidence_ratio": 0.08,
       "weight_kg": 27.78,
       "food_offered_g": 384,
@@ -683,7 +683,7 @@
         "scratch_night": 4,
         "shake_total": 17
       },
-      "wear_ratio": 0.9201976782309126,
+      "wear_ratio": 0.92,
       "low_confidence_ratio": 0.078,
       "weight_kg": 28.2,
       "food_offered_g": 384,
@@ -814,7 +814,7 @@
         "scratch_night": 7,
         "shake_total": 14
       },
-      "wear_ratio": 0.9240973147507062,
+      "wear_ratio": 0.924,
       "low_confidence_ratio": 0.041,
       "weight_kg": 28.27,
       "food_offered_g": 384,
@@ -945,7 +945,7 @@
         "scratch_night": 7,
         "shake_total": 15
       },
-      "wear_ratio": 0.9243624390700088,
+      "wear_ratio": 0.924,
       "low_confidence_ratio": 0.1,
       "weight_kg": null,
       "food_offered_g": 384,
@@ -1076,7 +1076,7 @@
         "scratch_night": 5,
         "shake_total": 16
       },
-      "wear_ratio": 0.8988996227009947,
+      "wear_ratio": 0.899,
       "low_confidence_ratio": 0.067,
       "weight_kg": 28.21,
       "food_offered_g": 384,
@@ -1338,7 +1338,7 @@
         "scratch_night": 5,
         "shake_total": 5
       },
-      "wear_ratio": 0.943355539542278,
+      "wear_ratio": 0.943,
       "low_confidence_ratio": 0.07,
       "weight_kg": null,
       "food_offered_g": 384,
@@ -1469,7 +1469,7 @@
         "scratch_night": 2,
         "shake_total": 8
       },
-      "wear_ratio": 0.9752536668353674,
+      "wear_ratio": 0.975,
       "low_confidence_ratio": 0.072,
       "weight_kg": 28.58,
       "food_offered_g": 384,
@@ -1600,7 +1600,7 @@
         "scratch_night": 1,
         "shake_total": 9
       },
-      "wear_ratio": 0.9576592580568768,
+      "wear_ratio": 0.958,
       "low_confidence_ratio": 0.094,
       "weight_kg": 28.93,
       "food_offered_g": 384,
@@ -1731,7 +1731,7 @@
         "scratch_night": 5,
         "shake_total": 12
       },
-      "wear_ratio": 0.9149995331304931,
+      "wear_ratio": 0.915,
       "low_confidence_ratio": 0.088,
       "weight_kg": null,
       "food_offered_g": 384,
@@ -1862,7 +1862,7 @@
         "scratch_night": 3,
         "shake_total": 18
       },
-      "wear_ratio": 0.9230920976771165,
+      "wear_ratio": 0.923,
       "low_confidence_ratio": 0.043,
       "weight_kg": 28.62,
       "food_offered_g": 384,
@@ -1993,7 +1993,7 @@
         "scratch_night": 7,
         "shake_total": 23
       },
-      "wear_ratio": 0.9107201412530574,
+      "wear_ratio": 0.911,
       "low_confidence_ratio": 0.055,
       "weight_kg": 29.12,
       "food_offered_g": 384,
@@ -2255,7 +2255,7 @@
         "scratch_night": 6,
         "shake_total": 11
       },
-      "wear_ratio": 0.887928692155065,
+      "wear_ratio": 0.888,
       "low_confidence_ratio": 0.092,
       "weight_kg": 28.31,
       "food_offered_g": 384,
@@ -2517,7 +2517,7 @@
         "scratch_night": 1,
         "shake_total": 17
       },
-      "wear_ratio": 0.9724269209006025,
+      "wear_ratio": 0.972,
       "low_confidence_ratio": 0.103,
       "weight_kg": 29.45,
       "food_offered_g": 384,
@@ -2648,7 +2648,7 @@
         "scratch_night": 2,
         "shake_total": 17
       },
-      "wear_ratio": 0.9699247345260971,
+      "wear_ratio": 0.97,
       "low_confidence_ratio": 0.091,
       "weight_kg": 28.67,
       "food_offered_g": 384,
@@ -2779,7 +2779,7 @@
         "scratch_night": 7,
         "shake_total": 14
       },
-      "wear_ratio": 0.9135300279997848,
+      "wear_ratio": 0.914,
       "low_confidence_ratio": 0.077,
       "weight_kg": 29.01,
       "food_offered_g": 384,
@@ -2910,7 +2910,7 @@
         "scratch_night": 2,
         "shake_total": 15
       },
-      "wear_ratio": 0.9399989723694978,
+      "wear_ratio": 0.94,
       "low_confidence_ratio": 0.035,
       "weight_kg": null,
       "food_offered_g": 384,
@@ -3041,7 +3041,7 @@
         "scratch_night": 1,
         "shake_total": 17
       },
-      "wear_ratio": 0.9299306481013891,
+      "wear_ratio": 0.93,
       "low_confidence_ratio": 0.097,
       "weight_kg": 28.71,
       "food_offered_g": 384,
@@ -3172,7 +3172,7 @@
         "scratch_night": 3,
         "shake_total": 9
       },
-      "wear_ratio": 0.9288106399796748,
+      "wear_ratio": 0.929,
       "low_confidence_ratio": 0.107,
       "weight_kg": null,
       "food_offered_g": 384,
@@ -3303,7 +3303,7 @@
         "scratch_night": 3,
         "shake_total": 14
       },
-      "wear_ratio": 0.9125069049072329,
+      "wear_ratio": 0.913,
       "low_confidence_ratio": 0.067,
       "weight_kg": 28.85,
       "food_offered_g": 384,
@@ -3434,7 +3434,7 @@
         "scratch_night": 4,
         "shake_total": 10
       },
-      "wear_ratio": 0.9481127100115742,
+      "wear_ratio": 0.948,
       "low_confidence_ratio": 0.09,
       "weight_kg": null,
       "food_offered_g": 384,
@@ -3565,7 +3565,7 @@
         "scratch_night": 5,
         "shake_total": 20
       },
-      "wear_ratio": 0.916520330912342,
+      "wear_ratio": 0.917,
       "low_confidence_ratio": 0.061,
       "weight_kg": 28.65,
       "food_offered_g": 384,
@@ -3696,7 +3696,7 @@
         "scratch_night": 3,
         "shake_total": 10
       },
-      "wear_ratio": 0.9235819690540236,
+      "wear_ratio": 0.924,
       "low_confidence_ratio": 0.113,
       "weight_kg": 28.82,
       "food_offered_g": 384,
@@ -3827,7 +3827,7 @@
         "scratch_night": 2,
         "shake_total": 14
       },
-      "wear_ratio": 0.9660733986731971,
+      "wear_ratio": 0.966,
       "low_confidence_ratio": 0.154,
       "weight_kg": null,
       "food_offered_g": 384,
@@ -3958,7 +3958,7 @@
         "scratch_night": 4,
         "shake_total": 14
       },
-      "wear_ratio": 0.8601302475967045,
+      "wear_ratio": 0.86,
       "low_confidence_ratio": 0.101,
       "weight_kg": 28.16,
       "food_offered_g": 384,
@@ -4089,7 +4089,7 @@
         "scratch_night": 5,
         "shake_total": 17
       },
-      "wear_ratio": 0.9605069752549569,
+      "wear_ratio": 0.961,
       "low_confidence_ratio": 0.073,
       "weight_kg": 28.03,
       "food_offered_g": 384,
@@ -4220,7 +4220,7 @@
         "scratch_night": 5,
         "shake_total": 15
       },
-      "wear_ratio": 0.9833990578574284,
+      "wear_ratio": 0.983,
       "low_confidence_ratio": 0.044,
       "weight_kg": 28.9,
       "food_offered_g": 384,
@@ -4351,7 +4351,7 @@
         "scratch_night": 6,
         "shake_total": 15
       },
-      "wear_ratio": 0.9063676383590872,
+      "wear_ratio": 0.906,
       "low_confidence_ratio": 0.064,
       "weight_kg": 28.42,
       "food_offered_g": 384,
@@ -4482,7 +4482,7 @@
         "scratch_night": 4,
         "shake_total": 13
       },
-      "wear_ratio": 0.931642873832523,
+      "wear_ratio": 0.932,
       "low_confidence_ratio": 0.1,
       "weight_kg": 28.37,
       "food_offered_g": 384,
@@ -4613,7 +4613,7 @@
         "scratch_night": 3,
         "shake_total": 9
       },
-      "wear_ratio": 0.9336662981700612,
+      "wear_ratio": 0.934,
       "low_confidence_ratio": 0.046,
       "weight_kg": 29.65,
       "food_offered_g": 384,
@@ -4875,7 +4875,7 @@
         "scratch_night": 6,
         "shake_total": 13
       },
-      "wear_ratio": 0.8888589948713781,
+      "wear_ratio": 0.889,
       "low_confidence_ratio": 0.124,
       "weight_kg": null,
       "food_offered_g": 384,
@@ -5006,7 +5006,7 @@
         "scratch_night": 3,
         "shake_total": 27
       },
-      "wear_ratio": 0.9587390488329132,
+      "wear_ratio": 0.959,
       "low_confidence_ratio": 0.05,
       "weight_kg": null,
       "food_offered_g": 384,
@@ -5137,7 +5137,7 @@
         "scratch_night": 4,
         "shake_total": 21
       },
-      "wear_ratio": 0.9613280668986576,
+      "wear_ratio": 0.961,
       "low_confidence_ratio": 0.065,
       "weight_kg": 28.67,
       "food_offered_g": 384,
@@ -5268,7 +5268,7 @@
         "scratch_night": 4,
         "shake_total": 16
       },
-      "wear_ratio": 0.9460639263700029,
+      "wear_ratio": 0.946,
       "low_confidence_ratio": 0.078,
       "weight_kg": null,
       "food_offered_g": 384,
@@ -5399,7 +5399,7 @@
         "scratch_night": 2,
         "shake_total": 11
       },
-      "wear_ratio": 0.9369935558560302,
+      "wear_ratio": 0.937,
       "low_confidence_ratio": 0.065,
       "weight_kg": null,
       "food_offered_g": 384,
@@ -5530,7 +5530,7 @@
         "scratch_night": 4,
         "shake_total": 17
       },
-      "wear_ratio": 0.9671421262266439,
+      "wear_ratio": 0.967,
       "low_confidence_ratio": 0.024,
       "weight_kg": 29.42,
       "food_offered_g": 384,
@@ -5661,7 +5661,7 @@
         "scratch_night": 2,
         "shake_total": 12
       },
-      "wear_ratio": 0.9344274798688417,
+      "wear_ratio": 0.934,
       "low_confidence_ratio": 0.108,
       "weight_kg": 28.49,
       "food_offered_g": 384,
@@ -5792,7 +5792,7 @@
         "scratch_night": 3,
         "shake_total": 18
       },
-      "wear_ratio": 0.8992191909573217,
+      "wear_ratio": 0.899,
       "low_confidence_ratio": 0.112,
       "weight_kg": 28.79,
       "food_offered_g": 384,
