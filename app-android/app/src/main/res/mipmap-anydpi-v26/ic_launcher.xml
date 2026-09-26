@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  적응형 아이콘. 기기마다 원형·둥근사각형 등으로 마스크가 달라진다.
+  전경 이미지는 108dp 캔버스에 70%로 축소해 넣었다 - 바깥 18dp는 잘릴 수 있어서다.
+  monochrome은 안드로이드 13+ 테마 아이콘용이며 시스템이 단색으로 물들인다.
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_background" />
+    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+    <monochrome android:drawable="@mipmap/ic_launcher_monochrome" />
+</adaptive-icon>
