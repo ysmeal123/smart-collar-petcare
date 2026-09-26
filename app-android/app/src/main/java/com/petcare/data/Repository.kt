@@ -8,20 +8,66 @@ import kotlinx.serialization.json.Json
 /**
  * 데이터 소스.
  *
- * asset에 동봉된 처방 결과를 읽는다. 백엔드를 안 띄워도 앱이 돈다 -
- * 발표 시연에서 서버 의존성을 없애기 위해서다.
+ * **서버가 있으면 서버, 없으면 asset.** 자동으로 내려간다.
  *
- * 서버를 붙이려면 load()에 HTTP 호출을 넣고 AndroidManifest에서
- * INTERNET 권한 주석을 풀면 된다. JSON 스키마는 동일하다.
+ * 발표 중에 네트워크가 끊겨도 화면이 비지 않아야 한다. 그렇다고 데모 데이터를
+ * 실데이터처럼 보여주면 안 되므로, 어느 쪽인지 화면에 표시한다.
+ *
+ * 두 경로가 **같은 스키마**를 쓴다. 서버의 `/v1/dogs/{id}/dashboard` 응답과
+ * asset의 `demo_*.json` 이 같은 모양이라, 화면 코드는 출처를 몰라도 된다.
  */
+
+enum class Origin { LIVE, DEMO }
+
+data class Loaded(
+    val dashboard: Dashboard,
+    val origin: Origin,
+    val note: String = "",
+)
+
 class Repository(private val context: Context) {
 
     private val json = Json {
         // 백엔드가 보내는 필드 중 앱이 안 쓰는 것이 많다
         ignoreUnknownKeys = true
+        coerceInputValues = true
     }
 
-    suspend fun load(scenario: String, dog: MyDog? = null): Dashboard =
+    /**
+     * 서버 우선, 실패하면 데모.
+     *
+     * @param scenario 데모로 내려갔을 때 보여줄 시나리오
+     */
+    suspend fun load(
+        scenario: String,
+        dog: MyDog? = null,
+        base: String? = null,
+        dogId: String? = null,
+    ): Loaded {
+        val server = base?.takeIf { it.isNotBlank() }
+        val id = dogId?.takeIf { it.isNotBlank() }
+
+        if (server != null && id != null) {
+            runCatching { Net.dashboard(server, id) }
+                .onSuccess { board ->
+                    return Loaded(
+                        dashboard = if (dog == null) board else board.withSafetyFilter(dog),
+                        origin = Origin.LIVE,
+                    )
+                }
+                .onFailure { e ->
+                    return Loaded(
+                        dashboard = demo(scenario, dog),
+                        origin = Origin.DEMO,
+                        note = "서버에 연결하지 못했습니다 (${e.message?.take(60)})",
+                    )
+                }
+        }
+
+        return Loaded(demo(scenario, dog), Origin.DEMO)
+    }
+
+    private suspend fun demo(scenario: String, dog: MyDog?): Dashboard =
         withContext(Dispatchers.IO) {
             val raw = context.assets
                 .open("demo_$scenario.json")
@@ -31,6 +77,21 @@ class Repository(private val context: Context) {
             val board = json.decodeFromString<Dashboard>(raw)
             if (dog == null) board else board.withSafetyFilter(dog)
         }
+
+    /** 보호자 답변 전송. 서버가 없으면 조용히 실패한다 (데모에서는 화면만 갱신). */
+    suspend fun answer(
+        base: String?, dogId: String?, answers: Map<String, String>,
+    ): Boolean {
+        val server = base?.takeIf { it.isNotBlank() } ?: return false
+        val id = dogId?.takeIf { it.isNotBlank() } ?: return false
+        return runCatching { Net.answer(server, id, answers) }.isSuccess
+    }
+
+    suspend fun sendWeight(base: String?, dogId: String?, kg: Double): Boolean {
+        val server = base?.takeIf { it.isNotBlank() } ?: return false
+        val id = dogId?.takeIf { it.isNotBlank() } ?: return false
+        return runCatching { Net.putWeight(server, id, kg) }.isSuccess
+    }
 
     companion object {
         /** 시연용 시나리오. 실제 서비스에는 없는 화면이다. */
@@ -103,12 +164,33 @@ fun Dashboard.withSafetyFilter(dog: MyDog): Dashboard {
         )
     }
 
+    // 계획의 끼니에서도 같은 카트리지를 갈아끼운다.
+    // 처방만 고치고 계획을 안 고치면 화면 두 곳이 다른 말을 한다.
+    val fixedPlan = plan?.let { p ->
+        p.copy(meals = p.meals.map { meal ->
+            meal.copy(pellets = meal.pellets.mapNotNull { pel ->
+                when {
+                    pel.cartridgeId !in blocked -> pel
+                    pel.cartridgeId == SafetyPreview.OMEGA3 &&
+                        SafetyPreview.ALGAE_OMEGA3 !in blocked ->
+                        pel.copy(
+                            cartridgeId = SafetyPreview.ALGAE_OMEGA3,
+                            name = "조류 오메가3",
+                            color = "#BDBDBD",
+                        )
+                    else -> null
+                }
+            })
+        })
+    }
+
     return copy(
         prescription = rx.copy(
             items = kept,
             // 근거는 순서가 곧 안전 설계다. 차단은 계산 뒤에 일어나므로 뒤에 붙인다.
             trace = rx.trace + notes,
         ),
+        plan = fixedPlan,
     )
 }
 

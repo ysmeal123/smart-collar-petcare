@@ -23,8 +23,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -33,11 +35,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.petcare.data.AxisScore
 import com.petcare.data.Dashboard
+import com.petcare.data.Loaded
+import com.petcare.data.Origin
 import com.petcare.data.MyDog
 import com.petcare.data.Prescription
 import com.petcare.data.Repository
 import kotlin.math.abs
 import kotlin.math.roundToInt
+import kotlinx.coroutines.launch
 
 /**
  * 대시보드.
@@ -52,18 +57,25 @@ fun DashboardScreen(
     repo: Repository,
     dog: MyDog,
     onEditProfile: () -> Unit,
+    onSaveProfile: (MyDog) -> Unit = {},
 ) {
     var scenario by remember { mutableStateOf("skin") }
-    var data by remember { mutableStateOf<Dashboard?>(null) }
+    var loaded by remember { mutableStateOf<Loaded?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
+    var reload by remember { mutableIntStateOf(0) }
+    val scope = rememberCoroutineScope()
 
-    LaunchedEffect(scenario, dog) {
-        data = null
+    LaunchedEffect(scenario, dog, reload) {
+        loaded = null
         error = null
-        runCatching { repo.load(scenario, dog) }
-            .onSuccess { data = it }
+        runCatching {
+            repo.load(scenario, dog, dog.serverBase, dog.serverDogId)
+        }
+            .onSuccess { loaded = it }
             .onFailure { error = it.message ?: it.toString() }
     }
+
+    val data = loaded?.dashboard
 
     Box(modifier = Modifier.fillMaxSize().background(T.canvas)) {
         when {
@@ -80,10 +92,18 @@ fun DashboardScreen(
 
             else -> Content(
                 data = data!!,
+                loaded = loaded!!,
                 dog = dog,
                 scenario = scenario,
                 onSwitch = { scenario = it },
                 onEditProfile = onEditProfile,
+                onSaveProfile = onSaveProfile,
+                onAnswer = { answers ->
+                    scope.launch {
+                        repo.answer(dog.serverBase, dog.serverDogId, answers)
+                        reload++
+                    }
+                },
             )
         }
     }
@@ -92,14 +112,18 @@ fun DashboardScreen(
 @Composable
 private fun Content(
     data: Dashboard,
+    loaded: Loaded,
     dog: MyDog,
     scenario: String,
     onSwitch: (String) -> Unit,
     onEditProfile: () -> Unit,
+    onSaveProfile: (MyDog) -> Unit,
+    onAnswer: (Map<String, String>) -> Unit,
 ) {
     val today = data.today
     val rx = data.prescription
     var showTrace by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(false) }
 
     // 활동 목표는 baseline(평소 수준)으로 잡는다.
     // 5kg 말티즈와 28kg 대형견에게 같은 걸음 수 목표를 들이대는 건 의미가 없다.
@@ -118,11 +142,15 @@ private fun Content(
 
         // --- 흰 면 ---------------------------------------------------------
         Tile(fill = T.canvas, verticalPadding = T.lg) {
-            Header(dog, onEditProfile)
-            Spacer(Modifier.height(T.md))
+            Header(dog) { showSettings = true }
+            Spacer(Modifier.height(T.sm))
+            OriginBadge(loaded.origin == Origin.LIVE, loaded.note)
 
-            // 시연용 시나리오 전환. 실제 앱에는 없다.
-            ScenarioPicker(scenario, onSwitch)
+            // 시연용 시나리오 전환. 서버에 붙으면 의미가 없으므로 감춘다.
+            if (loaded.origin == Origin.DEMO) {
+                Spacer(Modifier.height(T.md))
+                ScenarioPicker(scenario, onSwitch)
+            }
             Spacer(Modifier.height(T.xl))
 
             Column(
@@ -147,12 +175,25 @@ private fun Content(
 
             Spacer(Modifier.height(T.xl))
             InsightCard(rx)
+
+            // 최종 출력. 계획이 있으면 그걸 쓰고, 없으면 기존 처방 카드로 내려간다.
+            val plan = data.plan
             Spacer(Modifier.height(T.sm))
-            FeedingCard(
-                rx = rx,
-                mealsPerDay = dog.mealsPerDay,
-                onWhy = { showTrace = true },
-            )
+            if (plan != null) {
+                PlanCard(plan) { showTrace = true }
+            } else {
+                FeedingCard(rx, dog.mealsPerDay) { showTrace = true }
+            }
+
+            plan?.simulation?.let {
+                Spacer(Modifier.height(T.sm))
+                SimulationCard(it)
+            }
+
+            if (plan != null && plan.questions.isNotEmpty()) {
+                Spacer(Modifier.height(T.sm))
+                QuestionCard(plan.questions, onAnswer)
+            }
         }
 
         // --- 어두운 타일 ----------------------------------------------------
@@ -203,11 +244,16 @@ private fun Content(
 
         // --- 파치먼트 -------------------------------------------------------
         Tile(fill = T.parchment, verticalPadding = T.section) {
-            SectionHead("상태 지표", "평소 대비")
-            Spacer(Modifier.height(T.lg))
-            rx.axes.forEachIndexed { i, a ->
-                AxisRow(a)
-                if (i != rx.axes.lastIndex) Spacer(Modifier.height(T.md))
+            val twin = data.twin
+            if (twin != null) {
+                WellnessCard(twin)
+            } else {
+                SectionHead("상태 지표", "평소 대비")
+                Spacer(Modifier.height(T.lg))
+                rx.axes.forEachIndexed { i, a ->
+                    AxisRow(a)
+                    if (i != rx.axes.lastIndex) Spacer(Modifier.height(T.md))
+                }
             }
 
             Spacer(Modifier.height(T.xxl))
@@ -225,12 +271,21 @@ private fun Content(
     if (showTrace) {
         TraceSheet(rx = rx, onDismiss = { showTrace = false })
     }
+
+    if (showSettings) {
+        SettingsSheet(
+            dog = dog,
+            onDismiss = { showSettings = false },
+            onEditProfile = { showSettings = false; onEditProfile() },
+            onSave = { showSettings = false; onSaveProfile(it) },
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
 
 @Composable
-private fun Header(dog: MyDog, onEditProfile: () -> Unit) {
+private fun Header(dog: MyDog, onSettings: () -> Unit) {
     Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Box(
             modifier = Modifier
@@ -246,7 +301,7 @@ private fun Header(dog: MyDog, onEditProfile: () -> Unit) {
             Text(dog.name, style = T.displayMd)
             Text(dog.subtitle, style = T.caption.copy(color = T.inkMuted48))
         }
-        UtilityButton(label = "프로필", onClick = onEditProfile)
+        UtilityButton(label = "설정", onClick = onSettings)
     }
 }
 

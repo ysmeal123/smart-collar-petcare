@@ -87,6 +87,12 @@ private fun App(repo: Repository, store: ProfileStore) {
             repo = repo,
             dog = current,
             onEditProfile = { editing = true },
+            onSaveProfile = { updated ->
+                scope.launch {
+                    store.save(updated)
+                    dog = updated
+                }
+            },
         )
     }
 }

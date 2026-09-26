@@ -138,6 +138,10 @@ data class Dashboard(
     @SerialName("recent_days") val days: List<DaySummary>,
     val prescription: Prescription,
     val trend: Map<String, Trend>,
+    /** 최종 출력. 서버와 데모 asset 모두 같은 모양으로 담는다. */
+    val plan: FeedingPlan? = null,
+    /** 개체의 현재 상태. 웰니스 5축 화면이 읽는다. */
+    val twin: DogTwin? = null,
 ) {
     val today: DaySummary get() = days.last()
 }

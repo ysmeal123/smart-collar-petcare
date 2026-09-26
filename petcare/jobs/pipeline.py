@@ -191,14 +191,18 @@ def recompute(conn, dog_id: str, today: date | None = None) -> dict | None:
         updated_at=date.fromisoformat(answered_at[:10]) if answered_at else None,
     )
 
-    plan, next_state = build_plan(
+    plan, rx, next_state = build_plan(
         profile, days, state=state, context=context, today=today
     )
 
+    # 계획과 처방은 용도가 다르다. 섞어 넣으면 대시보드 스키마가 깨진다.
+    #   plans          무엇을 줄 것인가 (밥통이 읽는다)
+    #   prescriptions  왜 그렇게 정했나 (감사 추적)
     payload = plan.model_dump_json()
     db.save_plan_record(conn, dog_id, plan.date, payload)
     db.save_prescription(
-        conn, dog_id, plan.date, ALGO_VERSION, payload, next_state.model_dump_json()
+        conn, dog_id, plan.date, ALGO_VERSION,
+        rx.model_dump_json(), next_state.model_dump_json(),
     )
     return json.loads(payload)
 

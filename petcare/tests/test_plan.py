@@ -46,7 +46,7 @@ def normal_ds():
 
 def test_센서_데이터를_넣으면_급여_계획이_나온다(skin_ds):
     """이 한 줄이 시스템 전체다."""
-    plan, _ = build(skin_ds.profile, skin_ds.days)
+    plan, _, _ = build(skin_ds.profile, skin_ds.days)
 
     assert plan.dog_name == "초코"
     assert plan.total_food_g > 0
@@ -56,7 +56,7 @@ def test_센서_데이터를_넣으면_급여_계획이_나온다(skin_ds):
 
 
 def test_끼니로_쪼개도_총량이_보존된다(skin_ds):
-    plan, _ = build(skin_ds.profile, skin_ds.days)
+    plan, _, _ = build(skin_ds.profile, skin_ds.days)
 
     assert sum(m.food_g for m in plan.meals) == plan.total_food_g
 
@@ -67,7 +67,7 @@ def test_끼니로_쪼개도_총량이_보존된다(skin_ds):
 
 def test_길항_성분이_다른_끼니로_갈라진다(skin_ds):
     """알고리즘이 정한 끼니 배치를 계획이 그대로 따라야 한다."""
-    plan, _ = build(skin_ds.profile, skin_ds.days)
+    plan, _, _ = build(skin_ds.profile, skin_ds.days)
 
     morning = {p.cartridge_id for p in plan.meals[0].pellets}
     evening = {p.cartridge_id for p in plan.meals[-1].pellets}
@@ -80,7 +80,7 @@ def test_기준선이_안_여물면_사료만_준다(skin_ds):
     비교 대상이 없는 상태의 판정으로 영양제를 주는 건 근거가 없다.
     굶기지는 않으므로 사료는 정상 급여한다.
     """
-    plan, _ = build(skin_ds.profile, skin_ds.days[:10])
+    plan, _, _ = build(skin_ds.profile, skin_ds.days[:10])
 
     assert plan.ready is False
     assert "관찰" in plan.blocked_reason
@@ -89,7 +89,7 @@ def test_기준선이_안_여물면_사료만_준다(skin_ds):
 
 
 def test_건강한_개에게는_영양제가_없다(normal_ds):
-    plan, _ = build(normal_ds.profile, normal_ds.days)
+    plan, _, _ = build(normal_ds.profile, normal_ds.days)
 
     assert plan.ready is True
     assert plan.attention == []
@@ -99,7 +99,7 @@ def test_건강한_개에게는_영양제가_없다(normal_ds):
 
 def test_급성이면_영양제를_끊고_사료는_준다():
     ds = generate("acute")
-    plan, _ = build(ds.profile, ds.days)
+    plan, _, _ = build(ds.profile, ds.days)
 
     assert plan.escalated is True
     assert "병원" in plan.escalation_reason
@@ -109,7 +109,7 @@ def test_급성이면_영양제를_끊고_사료는_준다():
 
 def test_명령에_만료시각이_붙는다(skin_ds):
     """아침 급여가 저녁에 실행되면 안 된다."""
-    plan, _ = build(skin_ds.profile, skin_ds.days)
+    plan, _, _ = build(skin_ds.profile, skin_ds.days)
 
     for m in plan.meals:
         assert m.expires_at > m.at
@@ -118,14 +118,14 @@ def test_명령에_만료시각이_붙는다(skin_ds):
 
 def test_한_끼만_먹는_개는_전부_같이_받는다(skin_ds):
     one = skin_ds.profile.model_copy(update={"meals_per_day": 1})
-    plan, _ = build(one, skin_ds.days)
+    plan, _, _ = build(one, skin_ds.days)
 
     assert len(plan.meals) == 1
     assert plan.meals[0].food_g == plan.total_food_g
 
 
 def test_사람이_읽는_형태로_뽑힌다(skin_ds):
-    plan, _ = build(skin_ds.profile, skin_ds.days)
+    plan, _, _ = build(skin_ds.profile, skin_ds.days)
     text = plan.render()
 
     assert "초코" in text

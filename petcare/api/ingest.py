@@ -349,13 +349,36 @@ def dashboard(dog_id: str, days: int = 7) -> dict:
         if rx is None:
             raise HTTPException(409, "아직 처방이 계산되지 않았습니다")
 
+        # 앱은 한 번만 부른다. 차트·계획·상태·질문을 한 응답에 담는다.
+        # 왕복이 늘수록 화면이 조각조각 뜨고 오프라인 처리가 복잡해진다.
+        plan = db.latest_plan(c, dog_id)
+
         return {
             "scenario": "live",
             "profile": profile,
             "recent_days": recent[-days:],
             "prescription": rx,
             "trend": _trend(recent),
+            "plan": plan,
+            "twin": _twin_payload(c, dog_id),
         }
+
+
+def _twin_payload(c, dog_id: str) -> dict | None:
+    """대시보드에 같이 실어 보낼 개체 상태."""
+    from core.inference import evaluate_axes
+    from core.models import DailySummary, DogProfile
+    from core.twin import build as build_twin
+
+    raw = db.get_dog(c, dog_id)
+    rows = db.load_daily(c, dog_id)
+    if raw is None or not rows:
+        return None
+
+    profile = DogProfile.model_validate(raw)
+    days = [DailySummary.model_validate(d) for d in rows]
+    axes = evaluate_axes(profile, days)
+    return json.loads(build_twin(profile, days, axes).model_dump_json())
 
 
 def _trend(recent: list[dict], window: int = 7) -> dict:

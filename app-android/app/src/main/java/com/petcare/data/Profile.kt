@@ -116,6 +116,13 @@ data class MyDog(
     val medications: List<Medication> = emptyList(),
     /** 9~12번을 건너뛰었는지. 처방 근거에 이 사실을 표시해야 한다. */
     @SerialName("skipped_optional") val skippedOptional: Boolean = false,
+
+    // --- 서버 연결 ---
+    //
+    // 비어 있으면 asset 데모 데이터로 돈다. 발표 중 네트워크가 끊겨도
+    // 화면이 비지 않아야 하기 때문에 서버는 선택 사항으로 둔다.
+    @SerialName("server_base") val serverBase: String = "",
+    @SerialName("server_dog_id") val serverDogId: String = "",
 ) {
     /** 휴식기 에너지 요구량. 모든 급여량 계산의 출발점이다. */
     val rer: Double get() = 70.0 * weightKg.pow(0.75)

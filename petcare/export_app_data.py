@@ -17,7 +17,11 @@ from pathlib import Path
 import numpy as np
 
 from core.constants import CARTRIDGES
+from agent.wellness_agent import Context
+from core.inference import evaluate_axes
+from core.plan import build as build_plan
 from core.prescribe import prescribe
+from core.twin import build as build_twin
 from core.signal import baseline_slice, extract_metrics, valid_mask
 from mock.generator import SCENARIOS, generate
 
@@ -34,6 +38,11 @@ TREND_KEYS = ["scratch_night", "activity_sec", "restless", "run_sec"]
 def build(scenario: str) -> dict:
     ds = generate(scenario)
     rx, _ = prescribe(ds.profile, ds.days)
+
+    # 데모 데이터도 실서버와 같은 모양으로 만든다.
+    # 앱이 두 모드에서 다른 코드를 타면 한쪽만 깨져도 모른다.
+    plan, _, _ = build_plan(ds.profile, ds.days, context=Context())
+    twin = build_twin(ds.profile, ds.days, evaluate_axes(ds.profile, ds.days), rx)
 
     valid = valid_mask(ds.days)
     metrics = extract_metrics(ds.days)
@@ -54,6 +63,8 @@ def build(scenario: str) -> dict:
         "recent_days": [d.model_dump(mode="json") for d in ds.days[-7:]],
         "prescription": rx.model_dump(mode="json"),
         "trend": trend,
+        "plan": plan.model_dump(mode="json"),
+        "twin": twin.model_dump(mode="json"),
     }
 
 
@@ -67,9 +78,11 @@ def main() -> None:
             json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
             encoding="utf-8",
         )
-        rx = payload["prescription"]
-        items = " · ".join(f"{i['name']} {i['pellets']}알" for i in rx["items"]) or "없음"
-        print(f"  {path.name:<20} {rx['food_grams']:>4}g   {items}")
+        pl = payload["plan"]
+        lines = " / ".join(m["line"] for m in pl["meals"])
+        sim = pl["simulation"]["energy"] if pl.get("simulation") else "-"
+        print(f"  {path.name:<20} {pl['total_food_g']:>4}g  [{sim}]  질문 {len(pl['questions'])}개")
+        print(f"  {'':<20} {lines}")
 
     (OUT / "cartridges.json").write_text(
         json.dumps([c.model_dump(mode="json") for c in CARTRIDGES],

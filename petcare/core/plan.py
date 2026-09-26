@@ -59,10 +59,9 @@ class Meal(BaseModel):
     food_g: int
     pellets: list[Pellet] = Field(default_factory=list)
 
-    @computed_field
-    @property
-    def label(self) -> str:
-        return {0: "아침", 1: "점심", 2: "저녁"}.get(self.index, f"{self.index + 1}번째")
+    # 끼니 이름은 하루 몇 끼인지에 따라 달라진다.
+    # 2끼면 [아침, 저녁]이고 3끼여야 [아침, 점심, 저녁]이다.
+    label: str = ""
 
     @computed_field
     @property
@@ -146,6 +145,14 @@ def _meal_hours(profile: DogProfile) -> list[int]:
     return DEFAULT_MEAL_HOURS
 
 
+#: 끼니 수별 이름
+MEAL_LABELS: dict[int, list[str]] = {
+    1: ["급여"],
+    2: ["아침", "저녁"],
+    3: ["아침", "점심", "저녁"],
+}
+
+
 def split(rx: Prescription, profile: DogProfile, day: date) -> list[Meal]:
     """
     처방을 끼니별로 쪼갠다.
@@ -156,6 +163,7 @@ def split(rx: Prescription, profile: DogProfile, day: date) -> list[Meal]:
     """
     hours = _meal_hours(profile)
     n = len(hours)
+    labels = MEAL_LABELS.get(n, [f"{i + 1}번째" for i in range(n)])
 
     base = rx.food_grams // n
     per = [base] * n
@@ -174,7 +182,7 @@ def split(rx: Prescription, profile: DogProfile, day: date) -> list[Meal]:
         at = datetime.combine(day, datetime.min.time()) + timedelta(hours=hour)
         meals.append(Meal(
             index=i, hour=hour, at=at, expires_at=at + MEAL_TTL,
-            food_g=per[i],
+            food_g=per[i], label=labels[i],
             pellets=[
                 Pellet(
                     slot=CARTRIDGE_BY_ID[it.cartridge_id].slot,
@@ -195,13 +203,16 @@ def build(
     state: PrescriptionState | None = None,
     context=None,
     today: date | None = None,
-) -> tuple[FeedingPlan, PrescriptionState]:
+) -> tuple[FeedingPlan, Prescription, PrescriptionState]:
     """
     전 구간을 한 번에 돈다.
 
         추론 → 안전필터 → 처방 → 트윈 → 시뮬레이션 → 질문 → 계획
 
     이 함수 하나가 "센서 데이터 넣으면 급여 계획이 나온다"를 실현한다.
+
+    처방(Prescription)도 함께 돌려준다. 계획은 '무엇을 줄지'만 담고,
+    처방은 축 점수와 근거 전체를 담는다. 둘은 용도가 다르므로 따로 보관한다.
     """
     day = today or (days[-1].date if days else date.today())
 
@@ -251,4 +262,4 @@ def build(
             for q in ask(t, context, day)
         ]
 
-    return plan, next_state
+    return plan, rx, next_state
