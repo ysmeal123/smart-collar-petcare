@@ -13,6 +13,7 @@ import json
 from datetime import date, datetime, timedelta
 
 from core.aggregate import build_daily_summary, wear_ratio_from_seconds
+from core.weight import ScaleSession, daily_weight
 from core.inference import PrescriptionState
 from core.constants import CARTRIDGE_BY_ID
 from core.models import BehaviorEvent, BehaviorType, DailySummary, DogProfile
@@ -63,12 +64,67 @@ def rollup(conn, collar: str, day: date) -> DailySummary | None:
 
     wear = wear_ratio_from_seconds(worn_sec, covered_sec)
 
+    # 체중 - 캐스케이드 외부 루프의 입력.
+    # 그날 채택된 값이 없으면 None으로 둔다. 추측해서 채우면
+    # 활동계수가 잘못 교정되고 그 오차가 몇 달에 걸쳐 누적된다.
+    weight = _accepted_weight(conn, dog_id, day)
+
     summary = build_daily_summary(
         day, events, wear_ratio=wear,
         steps=steps if steps > 0 else None,
+        weight_kg=weight,
     )
     db.save_daily(conn, dog_id, day, summary.model_dump_json())
     return summary
+
+
+def _accepted_weight(conn, dog_id: str, day: date) -> float | None:
+    """그날 채택된 체중. 보호자 입력이 체중계보다 우선한다."""
+    rows = db.weights_of_day(conn, dog_id, day)
+    ok = [r for r in rows if r["accepted"]]
+    if not ok:
+        return None
+    manual = [r["kg"] for r in ok if r["source"] == "manual"]
+    return manual[-1] if manual else ok[-1]["kg"]
+
+
+def record_scale_sessions(
+    conn, dog_id: str, day: date, sessions: list[ScaleSession]
+) -> dict:
+    """
+    급식판 체중계가 올린 세션들을 정제해 저장한다.
+
+    버린 것도 이유와 함께 남긴다 - "왜 그날 체중이 반영 안 됐나"에
+    답할 수 있어야 한다.
+    """
+    last = db.last_accepted_weight(conn, dog_id, day)
+    result = daily_weight(sessions, manual_kg=None, last_known_kg=last)
+
+    at = datetime.combine(day, datetime.min.time()) + timedelta(hours=12)
+    if result.kg is not None:
+        db.save_weight(conn, dog_id, at, result.kg, "scale", True, result.reason)
+    elif sessions:
+        # 원본 중앙값이라도 남겨야 나중에 필터가 빡빡했는지 확인할 수 있다
+        raw = [v for s in sessions for v in s.samples_kg]
+        if raw:
+            db.save_weight(
+                conn, dog_id, at, round(sum(raw) / len(raw), 2),
+                "scale", False, result.reason,
+            )
+
+    return {"kg": result.kg, "accepted": result.kg is not None, "reason": result.reason}
+
+
+def record_manual_weight(conn, dog_id: str, at: datetime, kg: float) -> dict:
+    """보호자가 앱에서 직접 입력한 체중."""
+    last = db.last_accepted_weight(conn, dog_id, at.date())
+    result = daily_weight([], manual_kg=kg, last_known_kg=last)
+
+    db.save_weight(
+        conn, dog_id, at, kg, "manual",
+        result.kg is not None, result.reason,
+    )
+    return {"kg": result.kg, "accepted": result.kg is not None, "reason": result.reason}
 
 
 # ---------------------------------------------------------------------------

@@ -11,7 +11,9 @@ from __future__ import annotations
 from datetime import date, datetime
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
 
+from core.weight import ScaleSession
 from core.telemetry import (
     IngestBatch,
     steps_by_hour,
@@ -102,6 +104,74 @@ def run_daily_job(
     hours = [int(h) for h in meals.split(",") if h.strip()]
     with db.connect() as c:
         return pipeline.run_daily(c, collar, target, hours)
+
+
+# ---------------------------------------------------------------------------
+# 체중 — 캐스케이드 외부 루프의 입력
+# ---------------------------------------------------------------------------
+
+class ScaleSessionIn(BaseModel):
+    """개가 급식판 체중계에 한 번 올라간 동안의 표본들."""
+
+    started_at: datetime
+    samples_kg: list[float] = Field(min_length=1)
+
+
+class ScaleBatch(BaseModel):
+    sessions: list[ScaleSessionIn] = Field(default_factory=list)
+
+
+class ManualWeight(BaseModel):
+    kg: float = Field(gt=0, le=120)
+    measured_at: datetime | None = None
+
+
+@router.post("/feeder/{dog_id}/weight")
+def feeder_weight(dog_id: str, batch: ScaleBatch) -> dict:
+    """
+    급식판 체중계가 올린다.
+
+    잡음이 많은 소스다. 개가 부분적으로 올라가거나, 계속 움직이거나,
+    다른 개가 올라갈 수 있다. 서버가 세션 단위로 정제하고
+    의심스러우면 채택하지 않는다 - 추측해서 채우면 급여량이 틀어진다.
+    """
+    with db.connect() as c:
+        if db.get_dog(c, dog_id) is None:
+            raise HTTPException(404, "등록되지 않은 개체입니다")
+
+        sessions = [
+            ScaleSession(started_at=s.started_at, samples_kg=s.samples_kg)
+            for s in batch.sessions
+        ]
+        day = sessions[0].started_at.date() if sessions else date.today()
+        return pipeline.record_scale_sessions(c, dog_id, day, sessions)
+
+
+@router.post("/dogs/{dog_id}/weight")
+def manual_weight(dog_id: str, body: ManualWeight) -> dict:
+    """
+    보호자가 앱에서 직접 입력한다.
+
+    체중계 추정보다 정확하므로 같은 날이면 이쪽을 채택한다.
+    다만 오타(5.8 -> 58)는 걸러야 하므로 직전 값 대비 타당성은 본다.
+    """
+    with db.connect() as c:
+        if db.get_dog(c, dog_id) is None:
+            raise HTTPException(404, "등록되지 않은 개체입니다")
+        at = body.measured_at or datetime.now()
+        return pipeline.record_manual_weight(c, dog_id, at, body.kg)
+
+
+@router.get("/dogs/{dog_id}/weights")
+def weight_history(dog_id: str, days: int = 60) -> dict:
+    """체중 이력. 버린 측정도 이유와 함께 돌려준다."""
+    with db.connect() as c:
+        rows = c.execute(
+            "SELECT measured_at, kg, source, accepted, reason FROM weights "
+            "WHERE dog_id=? ORDER BY measured_at DESC LIMIT ?",
+            (dog_id, days),
+        ).fetchall()
+        return {"weights": [dict(r) for r in reversed(rows)]}
 
 
 @router.get("/dogs/{dog_id}/dashboard")

@@ -25,6 +25,7 @@ from core.telemetry import (
     to_behavior_events,
     wear_seconds_by_hour,
 )
+from core.weight import ScaleSession
 from jobs import pipeline
 from mock.generator import generate
 from store import db
@@ -110,9 +111,26 @@ def seed(scenario: str, conn) -> dict:
 
     wear_by_day = {d.date: d.wear_ratio for d in ds.days}
 
+    # 생성기가 만든 체중을 급식판 체중계가 잰 것처럼 밀어넣는다.
+    # 개가 가만히 서 있지 않으므로 표본에 흔들림을 섞는다.
+    weight_by_day = {d.date: d.weight_kg for d in ds.days}
+
     total = 0
     for day in sorted(by_day):
         total += push_day(conn, collar, day, by_day[day], wear_by_day.get(day, 1.0))
+
+        w = weight_by_day.get(day)
+        if w is not None:
+            jitter = [round(w + (i - 3) * 0.01, 2) for i in range(8)]
+            pipeline.record_scale_sessions(
+                conn, ds.profile.dog_id, day,
+                [ScaleSession(
+                    started_at=datetime.combine(day, datetime.min.time())
+                    + timedelta(hours=8),
+                    samples_kg=jitter,
+                )],
+            )
+
         pipeline.rollup(conn, collar, day)
 
     last = ds.days[-1].date
@@ -138,6 +156,8 @@ def seed(scenario: str, conn) -> dict:
         "escalated": rx["escalated"] if rx else None,
         "fired": [a["axis"] for a in rx["axes"] if a["active"]] if rx else [],
         "commands": queued,
+        "weights": sum(1 for d in ds.days if d.weight_kg is not None),
+        "k_final": rx["trace"] if False else None,
     }
 
 

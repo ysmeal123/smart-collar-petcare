@@ -68,6 +68,19 @@ CREATE TABLE IF NOT EXISTS wear (
     PRIMARY KEY (collar, hour)
 );
 
+-- 체중 측정. 급여량 캐스케이드 제어의 외부 루프 입력이다.
+-- 소스를 남긴다 - 체중계 추정과 보호자 입력은 신뢰도가 다르다.
+CREATE TABLE IF NOT EXISTS weights (
+    dog_id      TEXT NOT NULL,
+    measured_at TEXT NOT NULL,
+    kg          REAL NOT NULL,
+    source      TEXT NOT NULL,         -- 'scale' | 'manual'
+    accepted    INTEGER NOT NULL,      -- 타당성 검사 통과 여부
+    reason      TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (dog_id, measured_at, source)
+);
+CREATE INDEX IF NOT EXISTS idx_weights ON weights(dog_id, measured_at);
+
 -- 하루치 요약. 같은 날짜를 다시 올리면 덮어쓴다.
 CREATE TABLE IF NOT EXISTS daily_metrics (
     dog_id  TEXT NOT NULL,
@@ -214,6 +227,50 @@ def wear_of_day(c: sqlite3.Connection, collar: str, day: date) -> list[sqlite3.R
         "WHERE collar=? AND hour >= ? AND hour < ? ORDER BY hour",
         (collar, f"{day}T00:00:00", f"{day}T23:59:59"),
     ).fetchall()
+
+
+# ---------------------------------------------------------------------------
+# 체중
+# ---------------------------------------------------------------------------
+
+def save_weight(
+    c: sqlite3.Connection, dog_id: str, measured_at: datetime,
+    kg: float, source: str, accepted: bool, reason: str = "",
+) -> None:
+    """
+    버린 측정도 남긴다.
+
+    "왜 그날 체중이 반영 안 됐나"에 답할 수 있어야 하고,
+    필터가 지나치게 빡빡한지 나중에 확인하려면 버린 것도 봐야 한다.
+    """
+    c.execute(
+        "INSERT INTO weights(dog_id, measured_at, kg, source, accepted, reason) "
+        "VALUES(?,?,?,?,?,?) "
+        "ON CONFLICT(dog_id, measured_at, source) DO UPDATE SET "
+        "  kg=excluded.kg, accepted=excluded.accepted, reason=excluded.reason",
+        (dog_id, measured_at.isoformat(), kg, source, int(accepted), reason),
+    )
+
+
+def weights_of_day(c: sqlite3.Connection, dog_id: str, day: date) -> list[sqlite3.Row]:
+    return c.execute(
+        "SELECT measured_at, kg, source, accepted FROM weights "
+        "WHERE dog_id=? AND measured_at >= ? AND measured_at < ? "
+        "ORDER BY measured_at",
+        (dog_id, f"{day}T00:00:00", f"{day}T23:59:59.999999"),
+    ).fetchall()
+
+
+def last_accepted_weight(
+    c: sqlite3.Connection, dog_id: str, before: date
+) -> float | None:
+    """직전에 채택된 체중. 타당성 검사의 기준점이다."""
+    row = c.execute(
+        "SELECT kg FROM weights WHERE dog_id=? AND accepted=1 AND measured_at < ? "
+        "ORDER BY measured_at DESC LIMIT 1",
+        (dog_id, f"{before}T00:00:00"),
+    ).fetchone()
+    return row["kg"] if row else None
 
 
 # ---------------------------------------------------------------------------
