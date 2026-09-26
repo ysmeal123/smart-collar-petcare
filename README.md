@@ -52,7 +52,8 @@
 |---|---|
 | `petcare/` | 백엔드 — 추론 알고리즘, 안전 필터, API |
 | `app-android/` | 안드로이드 앱 (Kotlin + Jetpack Compose) |
-| `0811_md.md` | **설계 문서** — 왜 이렇게 만들었는지 |
+| `ARCHITECTURE.md` | **시스템 구조** — 무엇이 어디서 돌아가는지 |
+| `0811_md.md` | **설계 문서** — 왜 그렇게 판단하는지 |
 | `MVP_SCOPE.md` | 상용화하려면 뭐가 더 필요한지 |
 | `DESIGN-apple.md` | 앱 UI 디자인 토큰 |
 
@@ -145,11 +146,12 @@ uvicorn api.main:app --reload
 ## 읽는 순서 (처음 보는 팀원용)
 
 1. 이 파일
-2. `0811_md.md` **§12 "논의 중 정정된 결정들"** — 설계가 어디서 틀렸고 왜 뒤집었는지.
+2. `ARCHITECTURE.md` — 구성요소와 데이터 흐름. **여기부터 보면 전체가 잡힙니다**
+3. `0811_md.md` **§12 "논의 중 정정된 결정들"** — 설계가 어디서 틀렸고 왜 뒤집었는지.
    구현하면서 종이 설계가 반증된 사례 9건이 표로 정리돼 있습니다.
-3. `petcare/core/prescribe.py` — 처리 순서 8단계. **순서 자체가 안전 설계입니다.**
-4. `petcare/core/telemetry.py` — 목줄이 보내야 할 것. 펌웨어 짤 때 이걸 보면 됩니다.
-5. `app-android/README.md` — 앱 구조와 디자인 규칙
+4. `petcare/core/prescribe.py` — 처리 순서 8단계. **순서 자체가 안전 설계입니다.**
+5. `petcare/core/telemetry.py` — 목줄이 보내야 할 것. 펌웨어 짤 때 이걸 보면 됩니다.
+6. `app-android/README.md` — 앱 구조와 디자인 규칙
 
 ---
 
