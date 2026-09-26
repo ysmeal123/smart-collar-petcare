@@ -44,7 +44,7 @@ fun WelcomeTile(onStart: () -> Unit) {
             .padding(horizontal = T.gutter),
         verticalArrangement = Arrangement.Center,
     ) {
-        Text("펫케어", style = T.tagline.copy(color = T.primaryOnDark))
+        Text("pebble", style = T.tagline.copy(color = T.primaryOnDark))
         Spacer(Modifier.height(T.md))
         Text(
             "아이를 먼저\n알아야 합니다.",
