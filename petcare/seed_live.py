@@ -21,9 +21,8 @@ from core.telemetry import (
     CollarEvent,
     CollarStatus,
     IngestBatch,
-    steps_by_hour,
+    resolved_status,
     to_behavior_events,
-    wear_seconds_by_hour,
 )
 from core.weight import ScaleSession
 from jobs import pipeline
@@ -41,7 +40,30 @@ COLLARS = {
 }
 
 
-def push_day(conn, collar: str, day: date, events, wear_ratio: float) -> int:
+def spread_activity(hour_totals: dict[str, int]) -> list[dict[str, int]]:
+    """
+    한 시간의 활동 초를 60개 분 표본으로 쪼갠다.
+
+    한 분은 60초를 넘을 수 없으므로 앞쪽 분부터 채운다.
+    총합이 보존되는 것이 핵심이다 - 여기서 잃으면 집계 검증이 무의미해진다.
+    """
+    out = [{"walk_sec": 0, "run_sec": 0, "vigorous_sec": 0} for _ in range(60)]
+    i = 0
+    for kind in ("walk_sec", "run_sec", "vigorous_sec"):
+        left = hour_totals.get(kind, 0)
+        while left > 0 and i < 60:
+            used = sum(out[i].values())
+            take = min(60 - used, left)
+            if take <= 0:
+                i += 1
+                continue
+            out[i][kind] += take
+            left -= take
+    return out
+
+
+def push_day(conn, collar: str, day: date, events, wear_ratio: float,
+             activity: dict | None = None) -> int:
     """
     하루치를 게이트웨이가 올리듯 밀어넣는다.
 
@@ -63,15 +85,20 @@ def push_day(conn, collar: str, day: date, events, wear_ratio: float) -> int:
 
     # 1분마다 상태를 찍는다. 착용률은 생성기가 준 값을 그대로 재현한다.
     worn_minutes = int(1440 * wear_ratio)
-    status = [
-        CollarStatus(
-            t_ms=m * 60_000,
-            worn_sec=60 if m < worn_minutes else 0,
-            steps=2,
-            battery=max(20, 100 - (day.toordinal() % 80)),
-        )
-        for m in range(1440)
-    ]
+    act = activity or {}
+    status = []
+    for h in range(24):
+        minutes = spread_activity(act.get(h, {}))
+        for m, a in enumerate(minutes):
+            idx = h * 60 + m
+            status.append(CollarStatus(
+                t_ms=idx * 60_000,
+                worn_sec=60 if idx < worn_minutes else 0,
+                steps=2,
+                battery=max(20, 100 - (day.toordinal() % 80)),
+                rest_sec=60 - sum(a.values()),
+                **a,
+            ))
 
     batch = IngestBatch(
         collar_serial=collar,
@@ -89,10 +116,7 @@ def push_day(conn, collar: str, day: date, events, wear_ratio: float) -> int:
         list(zip(batch.events, [e.ts for e in resolved])),
     )
 
-    wear = wear_seconds_by_hour(batch)
-    steps = steps_by_hour(batch)
-    for hour, (worn, covered) in wear.items():
-        db.upsert_wear(conn, collar, hour.isoformat(), worn, covered, steps.get(hour, 0))
+    db.insert_status(conn, collar, batch.boot_id, resolved_status(batch))
 
     db.touch_collar(conn, collar, batch.fw_version, status[-1].battery)
     return n
@@ -117,7 +141,9 @@ def seed(scenario: str, conn) -> dict:
 
     total = 0
     for day in sorted(by_day):
-        total += push_day(conn, collar, day, by_day[day], wear_by_day.get(day, 1.0))
+        total += push_day(conn, collar, day, by_day[day],
+                          wear_by_day.get(day, 1.0),
+                          ds.activity.get(day.isoformat()))
 
         w = weight_by_day.get(day)
         if w is not None:

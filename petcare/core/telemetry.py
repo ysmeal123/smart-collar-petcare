@@ -26,15 +26,16 @@ from core.models import BehaviorEvent, BehaviorType
 
 class CollarEvent(BaseModel):
     """
-    행동 이벤트 하나. BLE로는 12바이트 고정 레코드로 보낸다.
+    짧고 드문 행동 하나. BLE로는 12바이트 고정 레코드로 보낸다.
 
         uint32 t_ms      부팅 후 경과 ms
-        uint8  type      1=scratch 2=shake 3=walk 4=run 5=posture_change
+        uint8  type      1=scratch 2=head_shake 3=body_shake 4=posture_change
         uint8  conf      0~255  (255로 나누면 0~1)
         uint16 dur_ds    지속시간, 0.1초 단위
         uint32 seq       이벤트 일련번호
 
-    하루 1천 건 남짓이라 12KB 정도다. BLE로 충분하다.
+    연속 활동은 여기 없다 - CollarStatus 의 1분 요약으로 올라간다.
+    이벤트는 하루 수백~1천 건이라 12KB 정도다. BLE로 충분하다.
     """
 
     seq: int = Field(ge=0, description="부팅 후 단조 증가. 중복 제거의 키")
@@ -46,17 +47,34 @@ class CollarEvent(BaseModel):
 
 class CollarStatus(BaseModel):
     """
-    1분마다 찍는 상태 표본.
+    1분마다 올리는 요약. Model A 결과와 기기 상태를 함께 담는다.
 
-    worn_sec 이 반드시 필요하다. 이벤트만으로는 '안 움직인 것'과
-    '목줄을 안 찬 것'을 구분할 수 없어서 착용률을 역산할 방법이 없다.
-    착용률 60% 미만인 날은 통계에서 빼야 하는데 그 판단이 불가능해진다.
+    **활동을 이벤트로 보내지 않는 이유.**
+    Model A는 1~2초 창마다 분류하므로 하루 4만 회가 넘는다.
+    이걸 이벤트로 올리면 대역폭도 배터리도 감당이 안 된다.
+    목줄이 1분 동안 각 클래스에 머문 초를 세어 요약만 올린다.
+
+    **worn_sec 이 반드시 필요한 이유.**
+    이벤트만으로는 '안 움직인 것'과 '목줄을 안 찬 것'을 구분할 수 없어
+    착용률을 역산할 방법이 없다. 착용률 60% 미만인 날은 통계에서 빼야
+    하는데 그 판단이 불가능해진다.
     """
 
     t_ms: int = Field(ge=0)
     worn_sec: int = Field(ge=0, le=60, description="직전 1분 중 착용 상태였던 초")
     steps: int = Field(ge=0, description="직전 1분 걸음 수. 보수계가 직접 센다")
     battery: int = Field(ge=0, le=100)
+
+    # --- Model A 출력. 네 값의 합이 60을 넘지 않는다 ---
+    rest_sec: int = Field(default=0, ge=0, le=60)
+    walk_sec: int = Field(default=0, ge=0, le=60)
+    run_sec: int = Field(default=0, ge=0, le=60)
+    vigorous_sec: int = Field(default=0, ge=0, le=60)
+
+    @property
+    def active_sec(self) -> int:
+        """휴식을 뺀 활동 초."""
+        return self.walk_sec + self.run_sec + self.vigorous_sec
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +156,14 @@ def wear_seconds_by_hour(batch: IngestBatch) -> dict[datetime, tuple[int, int]]:
     return out
 
 
+def resolved_status(batch: IngestBatch) -> list[tuple[CollarStatus, datetime]]:
+    """상태 표본에 실시각을 붙여서 돌려준다. 저장은 표본 단위로 한다."""
+    boot_at = resolve_clock(batch)
+    return [
+        (s, boot_at + timedelta(milliseconds=s.t_ms)) for s in batch.status
+    ]
+
+
 def steps_by_hour(batch: IngestBatch) -> dict[datetime, int]:
     """상태 표본의 걸음 수를 시간대별로 모은다."""
     boot_at = resolve_clock(batch)
@@ -146,6 +172,27 @@ def steps_by_hour(batch: IngestBatch) -> dict[datetime, int]:
         ts = boot_at + timedelta(milliseconds=s.t_ms)
         key = ts.replace(minute=0, second=0, microsecond=0)
         out[key] = out.get(key, 0) + s.steps
+    return out
+
+
+def activity_by_hour(batch: IngestBatch) -> dict[datetime, dict[str, int]]:
+    """
+    Model A 요약을 시간대별로 모은다.
+
+    반환: 시각 -> {walk_sec, run_sec, vigorous_sec, rest_sec}
+    """
+    boot_at = resolve_clock(batch)
+    out: dict[datetime, dict[str, int]] = {}
+    for s in batch.status:
+        ts = boot_at + timedelta(milliseconds=s.t_ms)
+        key = ts.replace(minute=0, second=0, microsecond=0)
+        acc = out.setdefault(
+            key, {"walk_sec": 0, "run_sec": 0, "vigorous_sec": 0, "rest_sec": 0}
+        )
+        acc["walk_sec"] += s.walk_sec
+        acc["run_sec"] += s.run_sec
+        acc["vigorous_sec"] += s.vigorous_sec
+        acc["rest_sec"] += s.rest_sec
     return out
 
 

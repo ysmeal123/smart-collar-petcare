@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from enum import Enum
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -40,15 +41,17 @@ from core.constants import (
     AXIS_WINDOW_DAYS,
     CONFIDENCE_GATE,
     ESCALATION_RULES,
-    OBSERVATION_ONLY_AXES,
+    ALERT_ONLY_AXES,
+    BLOCKING_AXES,
     MAD_TO_SIGMA,
-    MEAL_HOURS,
     MEDIAN_SE_FACTOR,
+    AXIS_MIN_MAD,
     MIN_MAD,
     NIGHT_HOURS,
     Z_ENTER,
 )
 from core.aggregate import build_daily_summary
+from core.signal import extract_metrics
 from core.models import HealthAxis
 from core.models import (
     Allergen,
@@ -83,50 +86,99 @@ SLEEP_HOURS = [22, 23, 0, 1, 2, 3, 4, 5, 6]
 # 정규화해서 하루 총합이 기저강도와 같아지도록 맞춘다.
 # ---------------------------------------------------------------------------
 
-CIRCADIAN: dict[BehaviorType, list[float]] = {
+class Gen(str, Enum):
+    """
+    생성기 내부 전용 행동 열거형.
+
+    WALK/RUN/VIGOROUS 는 BehaviorType 에 없다 - 실제 목줄도 이것들을
+    이벤트가 아니라 1분 요약으로 올리기 때문이다.
+    생성기는 편의상 이벤트처럼 만들어두고 집계 직전에 요약으로 접는다.
+    """
+    SCRATCH = "scratch"
+    BODY_SHAKE = "body_shake"
+    HEAD_SHAKE = "head_shake"
+    POSTURE_CHANGE = "posture_change"
+    WALK = "walk"
+    RUN = "run"
+    VIGOROUS = "vigorous"
+
+
+#: 이벤트로 올라가는 것들
+SPARSE: dict[Gen, BehaviorType] = {
+    Gen.SCRATCH: BehaviorType.SCRATCH,
+    Gen.BODY_SHAKE: BehaviorType.BODY_SHAKE,
+    Gen.HEAD_SHAKE: BehaviorType.HEAD_SHAKE,
+    Gen.POSTURE_CHANGE: BehaviorType.POSTURE_CHANGE,
+}
+
+#: 1분 요약으로 올라가는 것들
+ACTIVITY: dict[Gen, str] = {
+    Gen.WALK: "walk_sec",
+    Gen.RUN: "run_sec",
+    Gen.VIGOROUS: "vigorous_sec",
+}
+
+
+CIRCADIAN: dict[Gen, list[float]] = {
     # 긁기: 저녁~밤에 완만히 증가 (야간 소양감)
-    BehaviorType.SCRATCH: [
+    Gen.SCRATCH: [
         0.5, 0.4, 0.3, 0.3, 0.3, 0.4, 0.7, 1.0, 1.1, 0.9, 0.8, 0.8,
         0.9, 0.9, 0.9, 1.0, 1.1, 1.2, 1.3, 1.3, 1.4, 1.5, 1.2, 0.8,
     ],
     # 몸 털기: 식후(8시, 19시)와 기상 직후에 집중
-    BehaviorType.SHAKE: [
+    Gen.BODY_SHAKE: [
         0.2, 0.1, 0.1, 0.1, 0.1, 0.2, 0.8, 1.5, 2.0, 1.0, 0.6, 0.5,
         0.6, 0.6, 0.6, 0.7, 0.8, 1.0, 1.8, 2.0, 1.0, 0.6, 0.4, 0.3,
     ],
     # 걷기: 아침/저녁 산책 시간대
-    BehaviorType.WALK: [
+    Gen.WALK: [
         0.1, 0.05, 0.05, 0.05, 0.05, 0.1, 0.5, 1.5, 2.0, 1.2, 0.8, 0.7,
         0.8, 0.8, 0.8, 0.9, 1.2, 1.8, 2.2, 1.8, 1.0, 0.6, 0.3, 0.2,
     ],
     # 뛰기: 산책 중 피크에서만
-    BehaviorType.RUN: [
+    Gen.RUN: [
         0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.2, 1.2, 1.8, 0.8, 0.4, 0.3,
         0.4, 0.4, 0.4, 0.5, 0.8, 1.5, 2.0, 1.4, 0.6, 0.3, 0.1, 0.0,
     ],
+    # 머리 흔들기: 드물다. 기상 직후와 산책 후에 조금.
+    Gen.HEAD_SHAKE: [
+        0.3, 0.2, 0.2, 0.2, 0.2, 0.3, 0.9, 1.4, 1.2, 0.8, 0.7, 0.7,
+        0.8, 0.8, 0.8, 0.9, 1.0, 1.3, 1.4, 1.1, 0.8, 0.6, 0.4, 0.3,
+    ],
+    # 고강도 활동: 산책 피크에서만, 뛰기보다 더 좁게
+    Gen.VIGOROUS: [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.1, 1.0, 1.6, 0.6, 0.3, 0.2,
+        0.3, 0.3, 0.3, 0.4, 0.6, 1.3, 1.8, 1.2, 0.4, 0.2, 0.1, 0.0,
+    ],
     # 자세 변경 / 뒤척임: 수면 시간대에 집중
-    BehaviorType.POSTURE_CHANGE: [
+    Gen.POSTURE_CHANGE: [
         1.2, 1.3, 1.2, 1.1, 1.0, 1.0, 0.8, 0.2, 0.1, 0.1, 0.3, 0.3,
         0.4, 0.4, 0.3, 0.3, 0.2, 0.2, 0.2, 0.2, 0.3, 0.6, 1.0, 1.2,
     ],
 }
 
 # 건강한 개의 하루 평균 발생 횟수
-BASE_RATE: dict[BehaviorType, float] = {
-    BehaviorType.SCRATCH: 25.0,
-    BehaviorType.SHAKE: 12.0,
-    BehaviorType.WALK: 25.0,
-    BehaviorType.RUN: 10.0,
-    BehaviorType.POSTURE_CHANGE: 20.0,
+BASE_RATE: dict[Gen, float] = {
+    Gen.SCRATCH: 25.0,
+    Gen.BODY_SHAKE: 12.0,
+    # 정상 개는 머리를 거의 안 흔든다. 이 희소성이 귀축 판정을 어렵게 만들고,
+    # 그래서 AXIS_MIN_MAD 에서 귀축 하한을 따로 높여 뒀다.
+    Gen.HEAD_SHAKE: 1.5,
+    Gen.WALK: 25.0,
+    Gen.RUN: 10.0,
+    Gen.VIGOROUS: 4.0,
+    Gen.POSTURE_CHANGE: 20.0,
 }
 
 # 이벤트 1건의 지속시간 범위(초)
-DURATION_RANGE: dict[BehaviorType, tuple[float, float]] = {
-    BehaviorType.SCRATCH: (3.0, 12.0),
-    BehaviorType.SHAKE: (1.0, 3.0),
-    BehaviorType.WALK: (60.0, 240.0),
-    BehaviorType.RUN: (20.0, 90.0),
-    BehaviorType.POSTURE_CHANGE: (2.0, 6.0),
+DURATION_RANGE: dict[Gen, tuple[float, float]] = {
+    Gen.SCRATCH: (3.0, 12.0),
+    Gen.BODY_SHAKE: (1.0, 3.0),
+    Gen.HEAD_SHAKE: (0.8, 2.5),
+    Gen.WALK: (60.0, 240.0),
+    Gen.RUN: (20.0, 90.0),
+    Gen.VIGOROUS: (15.0, 60.0),
+    Gen.POSTURE_CHANGE: (2.0, 6.0),
 }
 
 
@@ -142,7 +194,7 @@ SIZE_ACTIVITY_SCALE = {
 SCENARIO_SEED_OFFSET = {"skin": 0, "joint": 101, "normal": 202, "acute": 303}
 
 
-def activity_scale(profile: DogProfile) -> dict[BehaviorType, float]:
+def activity_scale(profile: DogProfile) -> dict[Gen, float]:
     """
     프로필이 기본 활동량에 미치는 영향.
 
@@ -152,16 +204,19 @@ def activity_scale(profile: DogProfile) -> dict[BehaviorType, float]:
     """
     s = SIZE_ACTIVITY_SCALE[profile.size]
     scale = {b: 1.0 for b in BASE_RATE}
-    scale[BehaviorType.WALK] = s
-    scale[BehaviorType.RUN] = s
+    scale[Gen.WALK] = s
+    scale[Gen.RUN] = s
+    scale[Gen.VIGOROUS] = s
 
     for surg in profile.surgeries:
         if surg.type in (SurgeryType.CRUCIATE, SurgeryType.PATELLA, SurgeryType.DISC):
-            scale[BehaviorType.RUN] *= 0.60
-            scale[BehaviorType.WALK] *= 0.85
+            scale[Gen.RUN] *= 0.60
+            scale[Gen.WALK] *= 0.85
+            scale[Gen.VIGOROUS] *= 0.50
 
     if profile.is_senior:
-        scale[BehaviorType.RUN] *= 0.70
+        scale[Gen.RUN] *= 0.70
+        scale[Gen.VIGOROUS] *= 0.60
 
     return scale
 
@@ -210,18 +265,18 @@ def _decay(day: int, onset: int, rate: float) -> float:
     return rate ** (day - onset + 1)
 
 
-def modulate(scenario: str, day: int, hour: int, behavior: BehaviorType) -> float:
+def modulate(scenario: str, day: int, hour: int, behavior: Gen) -> float:
     """시나리오가 특정 날짜/시간대/행동의 강도를 얼마나 왜곡하는가."""
     night = hour in NIGHT_HOURS
 
     # --- A. 피부염 의심 -------------------------------------------------
     # Day 31부터 밤 긁기가 3배로. 몸털기와 뒤척임도 함께 오른다.
     if scenario == "skin":
-        if behavior is BehaviorType.SCRATCH:
+        if behavior is Gen.SCRATCH:
             return _ramp(day, 31, 3, 3.0 if night else 1.4)
-        if behavior is BehaviorType.SHAKE:
+        if behavior is Gen.BODY_SHAKE:
             return _ramp(day, 31, 3, 1.8)
-        if behavior is BehaviorType.POSTURE_CHANGE:
+        if behavior is Gen.POSTURE_CHANGE:
             return _ramp(day, 31, 3, 1.5)
         return 1.0
 
@@ -230,11 +285,14 @@ def modulate(scenario: str, day: int, hour: int, behavior: BehaviorType) -> floa
     # 20일 누적이면 뛰기 -56%, 걷기 -36%, 야간 각성 +81%가 된다.
     # 7일 중앙값 vs 30일 중앙값 비교가 이걸 잡아내는지가 검증 포인트.
     if scenario == "joint":
-        if behavior is BehaviorType.RUN:
+        # 고강도 놀이를 가장 먼저 포기한다. 관절통의 가장 이른 신호다.
+        if behavior is Gen.VIGOROUS:
+            return _decay(day, 25, 0.945)
+        if behavior is Gen.RUN:
             return _decay(day, 25, 0.960)
-        if behavior is BehaviorType.WALK:
+        if behavior is Gen.WALK:
             return _decay(day, 25, 0.978)
-        if behavior is BehaviorType.POSTURE_CHANGE and night:
+        if behavior is Gen.POSTURE_CHANGE and night:
             return _decay(day, 25, 1.030)
         return 1.0
 
@@ -245,13 +303,15 @@ def modulate(scenario: str, day: int, hour: int, behavior: BehaviorType) -> floa
     if scenario == "acute":
         if day < 41:
             return 1.0
-        if behavior is BehaviorType.RUN:
+        if behavior is Gen.VIGOROUS:
+            return 0.05         # 노는 건 완전히 멈춘다
+        if behavior is Gen.RUN:
             return 0.15
-        if behavior is BehaviorType.WALK:
+        if behavior is Gen.WALK:
             return 0.35
-        if behavior is BehaviorType.POSTURE_CHANGE and night:
+        if behavior is Gen.POSTURE_CHANGE and night:
             return 2.6
-        if behavior is BehaviorType.SCRATCH:
+        if behavior is Gen.SCRATCH:
             return 0.7          # 아파서 긁을 여력도 없다
         return 1.0
 
@@ -345,6 +405,47 @@ def build_profile(scenario: str) -> DogProfile:
 # 이벤트 생성
 # ---------------------------------------------------------------------------
 
+@dataclass
+class GenEvent:
+    """생성기 내부 이벤트. 활동까지 포함하므로 BehaviorEvent 로는 담을 수 없다."""
+    ts: datetime
+    type: Gen
+    confidence: float
+    duration_s: float
+
+
+def split_day(evs: list[GenEvent]) -> tuple[list[BehaviorEvent], dict[int, dict[str, int]]]:
+    """
+    생성기 이벤트를 실제 목줄이 올리는 두 갈래로 나눈다.
+
+        짧은 행동  -> BehaviorEvent (이벤트로 전송)
+        연속 활동  -> 시간대별 초 요약 (1분 요약으로 전송)
+
+    실기기와 같은 모양으로 내보내야 수집 경로 검증이 의미를 갖는다.
+    """
+    sparse: list[BehaviorEvent] = []
+    activity: dict[int, dict[str, int]] = {}
+
+    for e in evs:
+        if e.type in SPARSE:
+            sparse.append(BehaviorEvent(
+                ts=e.ts, type=SPARSE[e.type],
+                confidence=e.confidence, duration_s=e.duration_s,
+            ))
+            continue
+
+        # 활동은 목줄이 1분 단위로 이미 집계해서 올린다.
+        # 개별 신뢰도가 붙지 않으므로 여기서 걸러 둔다.
+        if e.confidence < CONFIDENCE_GATE:
+            continue
+        acc = activity.setdefault(
+            e.ts.hour, {"walk_sec": 0, "run_sec": 0, "vigorous_sec": 0}
+        )
+        acc[ACTIVITY[e.type]] += int(e.duration_s)
+
+    return sparse, activity
+
+
 def _sample_confidence(rng: np.random.Generator, low_rate: float) -> float:
     if rng.random() < low_rate:
         return float(rng.uniform(0.30, CONFIDENCE_GATE - 0.01))
@@ -353,14 +454,14 @@ def _sample_confidence(rng: np.random.Generator, low_rate: float) -> float:
 
 def _make_event(
     rng: np.random.Generator, day_date: date, hour: int,
-    behavior: BehaviorType, low_conf_rate: float,
-) -> BehaviorEvent:
+    behavior: Gen, low_conf_rate: float,
+) -> GenEvent:
     lo, hi = DURATION_RANGE[behavior]
     ts = datetime(
         day_date.year, day_date.month, day_date.day,
         hour, int(rng.integers(0, 60)), int(rng.integers(0, 60)),
     )
-    return BehaviorEvent(
+    return GenEvent(
         ts=ts,
         type=behavior,
         confidence=_sample_confidence(rng, low_conf_rate),
@@ -370,15 +471,15 @@ def _make_event(
 
 def generate_events(
     scenario: str, profile: DogProfile, rng: np.random.Generator, start: date
-) -> tuple[list[BehaviorEvent], dict[int, DayNoise]]:
-    """44일치 행동 이벤트를 비균질 포아송 과정으로 생성한다."""
+) -> tuple[list[GenEvent], dict[int, DayNoise]]:
+    """44일치 행동을 비균질 포아송 과정으로 생성한다."""
 
     # 개체 편차: 같은 건강 상태라도 개마다 기본 빈도가 다르다
     individual = {b: float(rng.lognormal(0.0, 0.15)) for b in BASE_RATE}
     # 크기/수술 이력에 따른 기본 활동 수준
     prof_scale = activity_scale(profile)
 
-    events: list[BehaviorEvent] = []
+    events: list[GenEvent] = []
     noises: dict[int, DayNoise] = {}
 
     for day in range(1, TOTAL_DAYS + 1):
@@ -412,9 +513,9 @@ def generate_events(
         if noise.car_trip:
             for hour in (14, 15):
                 for _ in range(int(rng.integers(14, 22))):
-                    events.append(_make_event(rng, day_date, hour, BehaviorType.SHAKE, 1.0))
+                    events.append(_make_event(rng, day_date, hour, Gen.BODY_SHAKE, 1.0))
                 for _ in range(int(rng.integers(5, 9))):
-                    events.append(_make_event(rng, day_date, hour, BehaviorType.WALK, 1.0))
+                    events.append(_make_event(rng, day_date, hour, Gen.WALK, 1.0))
 
     events.sort(key=lambda e: e.ts)
     return events, noises
@@ -459,6 +560,7 @@ def generate_weight_and_intake(
 def summarize_day(
     day_date: date, events: list[BehaviorEvent], noise: DayNoise,
     weight: float | None = None, intake: tuple[int, int] = (0, 0),
+    activity: dict[int, dict[str, int]] | None = None,
 ) -> DailySummary:
     """
     하루치 이벤트를 알고리즘 입력으로 집계한다.
@@ -470,6 +572,7 @@ def summarize_day(
         day_date,
         events,
         wear_ratio=noise.wear_ratio,
+        activity=activity,
         weight_kg=weight,
         food_offered_g=intake[0],
         food_eaten_g=intake[1],
@@ -485,22 +588,27 @@ def generate(scenario: str, seed: int = 42) -> SensorDataset:
     events, noises = generate_events(scenario, profile, rng, start)
     weights, intakes = generate_weight_and_intake(scenario, profile, rng)
 
-    by_day: dict[date, list[BehaviorEvent]] = {}
+    by_day: dict[date, list[GenEvent]] = {}
     for e in events:
         by_day.setdefault(e.ts.date(), []).append(e)
 
-    days = [
-        summarize_day(
-            start + timedelta(days=i),
-            by_day.get(start + timedelta(days=i), []),
-            noises[i + 1],
-            weights[i],
-            intakes[i],
-        )
-        for i in range(TOTAL_DAYS)
-    ]
+    days: list[DailySummary] = []
+    sparse_all: list[BehaviorEvent] = []
+    activity_all: dict[str, dict[int, dict[str, int]]] = {}
 
-    return SensorDataset(profile=profile, scenario=scenario, days=days, events=events)
+    for i in range(TOTAL_DAYS):
+        d = start + timedelta(days=i)
+        sparse, activity = split_day(by_day.get(d, []))
+        sparse_all.extend(sparse)
+        activity_all[d.isoformat()] = activity
+        days.append(
+            summarize_day(d, sparse, noises[i + 1], weights[i], intakes[i], activity)
+        )
+
+    return SensorDataset(
+        profile=profile, scenario=scenario, days=days,
+        events=sparse_all, activity=activity_all,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -510,7 +618,8 @@ def generate(scenario: str, seed: int = 42) -> SensorDataset:
 _BLOCKS = "▁▂▃▄▅▆▇█"
 
 
-def robust_z(baseline: list[float], recent: list[float]) -> tuple[float, float, float]:
+def robust_z(baseline: list[float], recent: list[float],
+             min_mad: float = MIN_MAD) -> tuple[float, float, float]:
     """
     Step 4에서 쓸 z-score를 미리 계산해 데이터가 제대로 만들어졌는지 검증한다.
     (정식 구현은 core/signal.py로 옮긴다)
@@ -528,7 +637,7 @@ def robust_z(baseline: list[float], recent: list[float]) -> tuple[float, float, 
     recent_med = float(np.median(recent))
 
     mad = float(np.median(np.abs(base_arr - base_med))) * MAD_TO_SIGMA
-    se = max(mad, MIN_MAD) * MEDIAN_SE_FACTOR / np.sqrt(len(recent))
+    se = max(mad, min_mad) * MEDIAN_SE_FACTOR / np.sqrt(len(recent))
 
     return (recent_med - base_med) / se, base_med, recent_med
 
@@ -541,52 +650,25 @@ def spark(values, vmax: float | None = None) -> str:
     return "".join(_BLOCKS[min(7, int(v / top * 7.999))] for v in vals)
 
 
-def extract_metrics(days: list[DailySummary]) -> dict[str, list[float]]:
-    """AXIS_WEIGHTS가 참조하는 지표들을 일별 시계열로 뽑아낸다."""
-    post_meal = [h for m in MEAL_HOURS for h in (m, m + 1)]
-
-    return {
-        "scratch_night":      [d.summary.scratch_night for d in days],
-        "shake":              [d.summary.shake_total for d in days],
-        "restless":           [d.sleep.restless_count for d in days],
-        "run_sec":            [d.summary.run_sec for d in days],
-        "walk_sec":           [d.summary.walk_sec for d in days],
-        # 깊은 밤(22~04시)의 뒤척임. 통증성 각성에 더 민감하다.
-        "restless_night":     [sum(d.hourly.posture_change[h] for h in NIGHT_HOURS)
-                               for d in days],
-        # 알려진 한계: 이 두 지표는 피부축과 교차 오염된다.
-        # 피부염으로 하루 종일 몸을 털면 식후 몸털기도 함께 늘어난다.
-        # '전체 대비 비율'로 정규화해봤으나, 비율은 baseline 변동폭이 작아
-        # z가 과민해지면서 오히려 악화됐다(+1.69 -> +9.99).
-        # 지금은 절대량 + 2주 연속 규칙으로 막고 있으나 근본 해결은 아니다.
-        # -> 소화축을 처방 트리거에서 제외하는 방안을 검토 중.
-        "shake_post_meal":    [sum(d.hourly.shake[h] for h in post_meal) for d in days],
-        "posture_post_meal":  [sum(d.hourly.posture_change[h] for h in post_meal)
-                               for d in days],
-        "sleep_min":          [d.sleep.total_min for d in days],
-        "night_activity":     [sum(d.hourly.activity_sec[h] for h in SLEEP_HOURS)
-                               for d in days],
-    }
-
-
 def axis_score(
     metrics: dict[str, list[float]], valid: list[bool],
     axis: HealthAxis, lo: int, hi: int,
 ) -> tuple[float, dict[str, float]]:
     """
-    축 하나의 가중 z-합을 구한다.
+    축 하나의 가중 z-합을 구한다. 리포트 표시용이다.
 
-    개별 지표가 우연히 임계를 넘어도, 가중합이 넘지 않으면 처방하지 않는다.
-    이 구조 자체가 오탐에 대한 1차 방어선이다.
+    지표 추출은 core.signal.extract_metrics 를 그대로 쓴다.
+    여기에 사본을 두면 리포트와 실제 판정이 갈라진다.
     """
     contributions: dict[str, float] = {}
     total = 0.0
+    floor = AXIS_MIN_MAD.get(axis, MIN_MAD)
 
     for key, weight in AXIS_WEIGHTS[axis].items():
         vals = metrics[key]
         base = [v for v, ok in zip(vals[:BASELINE_END], valid[:BASELINE_END]) if ok]
         window = [v for v, ok in zip(vals[lo:hi], valid[lo:hi]) if ok]
-        z, _, _ = robust_z(base, window)
+        z, _, _ = robust_z(base, window, floor)
 
         contributions[key] = weight * z
         total += weight * z
@@ -631,8 +713,11 @@ def print_report(ds: SensorDataset) -> None:
     print(f"\n  축 점수 판정   |가중 z합| >= {Z_ENTER} 이어야 처방{note}")
 
     axis_labels = {
-        HealthAxis.SKIN: "피부", HealthAxis.JOINT: "관절",
-        HealthAxis.SLEEP: "수면·인지", HealthAxis.DIGEST: "소화",
+        HealthAxis.SKIN: "피부",
+        HealthAxis.MOBILITY: "이동성",
+        HealthAxis.EAR: "귀",
+        HealthAxis.SLEEP: "수면·회복",
+        HealthAxis.APPETITE: "식욕",
     }
     fired_axes: set[HealthAxis] = set()
 
@@ -653,8 +738,10 @@ def print_report(ds: SensorDataset) -> None:
             len({s > 0 for s in scores}) == 1
 
         # 처방 권한 판정
-        if axis in OBSERVATION_ONLY_AXES:
-            mark = "— 참고 지표 (처방 권한 없음)"
+        if axis in ALERT_ONLY_AXES:
+            mark = "— 알림만 (영양제를 움직이지 않음)"
+        elif axis in BLOCKING_AXES:
+            mark = "— 차단만 (발화 시 영양제 변경 금지)"
         elif not fired:
             mark = "(임계 미달)" if max(map(abs, scores)) < Z_ENTER else "(연속성 미달)"
         else:
@@ -778,7 +865,7 @@ def print_noise_filter_demo(ds: SensorDataset) -> None:
     raw, kept = [], []
     for i in range(TOTAL_DAYS):
         evs = by_day.get(start + timedelta(days=i), [])
-        raw.append(sum(1 for e in evs if e.type is BehaviorType.SHAKE))
+        raw.append(sum(1 for e in evs if e.type is BehaviorType.BODY_SHAKE))
         kept.append(ds.days[i].summary.shake_total)
 
     top = max(raw) or 1

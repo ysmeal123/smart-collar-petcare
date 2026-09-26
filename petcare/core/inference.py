@@ -20,17 +20,21 @@ from pydantic import BaseModel, Field
 
 from core.constants import (
     ALLERGY_AXIS_SENSITIVITY,
+    AXIS_MIN_MAD,
     AXIS_SUPPRESSED_BY,
     AXIS_WEIGHTS,
     AXIS_WINDOW_DAYS,
     ESCALATION_RULES,
+    ALERT_ONLY_AXES,
+    BLOCKING_AXES,
     OBSERVATION_ONLY_AXES,
     PRESCRIBING_AXES,
-    SIZE_JOINT_SENSITIVITY,
+    SIZE_MOBILITY_SENSITIVITY,
     SURGERY_EFFECT,
     Z_ENTER,
     Z_EXIT,
 )
+from core.constants import MIN_MAD
 from core.models import AxisScore, DailySummary, DogProfile, HealthAxis
 from core.signal import acute_z, axis_windows, extract_metrics, metric_z, valid_mask
 
@@ -62,8 +66,8 @@ def _profile_sensitivity(profile: DogProfile, axis: HealthAxis) -> float:
         k *= ALLERGY_AXIS_SENSITIVITY.get(allergen, {}).get(axis, 1.0)
 
     # 소형견은 슬개골, 대형견은 고관절 문제가 호발한다
-    if axis is HealthAxis.JOINT:
-        k *= SIZE_JOINT_SENSITIVITY[profile.size]
+    if axis is HealthAxis.MOBILITY:
+        k *= SIZE_MOBILITY_SENSITIVITY[profile.size]
 
     return k
 
@@ -100,15 +104,16 @@ def _message(axis: HealthAxis, contributors: dict[str, float],
 
     labels = {
         "scratch_night": "밤에 긁는 횟수",
-        "shake": "몸을 터는 횟수",
+        "body_shake": "몸을 터는 횟수",
+        "head_shake": "머리를 흔드는 횟수",
+        "vigorous_sec": "활발하게 노는 시간",
+        "intake_ratio": "먹는 양",
         "restless": "자면서 뒤척이는 횟수",
         "restless_night": "한밤중 뒤척이는 횟수",
         "run_sec": "뛰는 시간",
         "walk_sec": "걷는 시간",
         "sleep_min": "자는 시간",
         "night_activity": "밤에 움직이는 시간",
-        "shake_post_meal": "밥 먹고 몸을 터는 횟수",
-        "posture_post_meal": "밥 먹고 자세를 바꾸는 횟수",
     }
     label = labels.get(key, key)
 
@@ -123,7 +128,7 @@ def evaluate_axes(
     profile: DogProfile, days: list[DailySummary],
     state: PrescriptionState | None = None,
 ) -> list[AxisScore]:
-    """4개 축을 판정한다. 반환 순서는 처방 권한이 있는 축부터."""
+    """웰니스 5축을 판정한다. 반환 순서는 처방 권한이 있는 축부터."""
     state = state or PrescriptionState()
     valid = valid_mask(days)
     metrics = extract_metrics(days)
@@ -148,8 +153,9 @@ def evaluate_axes(
             contrib: dict[str, float] = {}
             ratios: dict[str, float] = {}
 
+            floor = AXIS_MIN_MAD.get(axis, MIN_MAD)
             for key, weight in AXIS_WEIGHTS[axis].items():
-                r = metric_z(metrics, valid, key, lo, hi, n)
+                r = metric_z(metrics, valid, key, lo, hi, n, floor)
                 contrib[key] = weight * r.z * sens
                 ratios[key] = r.ratio
                 total += contrib[key]
@@ -172,7 +178,7 @@ def evaluate_axes(
         blockers = [a for a in AXIS_SUPPRESSED_BY.get(axis, []) if a in fired]
         suppressed = active and bool(blockers)
 
-        # 소화축은 처방 권한이 없다 (근거 취약 + 피부축과 교차 오염)
+        # 귀축은 알림만, 식욕축은 차단만 한다. 영양제를 움직이지 않는다.
         no_authority = axis in OBSERVATION_ONLY_AXES
 
         prescribing = active and not suppressed and not no_authority
@@ -183,8 +189,10 @@ def evaluate_axes(
         if suppressed:
             names = "/".join(a.value for a in blockers)
             note = f" (원인은 {names} — 그쪽을 먼저 치료합니다)"
-        elif no_authority and active:
-            note = " (참고 지표 — 처방하지 않습니다)"
+        elif active and axis in ALERT_ONLY_AXES:
+            note = " (병원에서 확인해 주세요 — 영양제로 다룰 문제가 아닙니다)"
+        elif active and axis in BLOCKING_AXES:
+            note = " (원인이 확인될 때까지 영양제 변경을 멈췄습니다)"
 
         results.append(AxisScore(
             axis=axis,

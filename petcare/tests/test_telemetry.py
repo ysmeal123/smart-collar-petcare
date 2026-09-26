@@ -126,22 +126,53 @@ def test_밤에_긁은_것만_따로_센다():
     assert d.summary.scratch_night == 2
 
 
+def test_활동은_이벤트가_아니라_1분_요약으로_온다():
+    """
+    Model A는 1~2초마다 분류한다. 이벤트로 올리면 하루 4만 건이 넘어
+    배터리도 대역폭도 감당이 안 된다.
+    """
+    assert not hasattr(BehaviorType, "WALK")
+    assert not hasattr(BehaviorType, "RUN")
+
+    s = CollarStatus(
+        t_ms=0, worn_sec=60, steps=40, battery=80,
+        rest_sec=30, walk_sec=20, run_sec=8, vigorous_sec=2,
+    )
+    assert s.active_sec == 30        # 휴식은 활동이 아니다
+
+
 def test_활동은_초로_보존된다():
     """
     분으로 반올림해 저장하면 하루 2~5분만 뛰는 개의 신호가 통째로 사라진다.
     알고리즘은 초를 쓰고 화면만 분을 쓴다.
     """
-    events = to_behavior_events(batch([
-        ev(1, 10.0, BehaviorType.RUN, dur=150.0),
-        ev(2, 11.0, BehaviorType.WALK, dur=600.0),
-    ]))
-    d = build_daily_summary(DAY.date(), events, wear_ratio=1.0)
+    activity = {
+        10: {"run_sec": 150, "walk_sec": 0, "vigorous_sec": 0},
+        11: {"run_sec": 0, "walk_sec": 600, "vigorous_sec": 0},
+    }
+    d = build_daily_summary(DAY.date(), [], wear_ratio=1.0, activity=activity)
 
     assert d.summary.run_sec == 150
     assert d.summary.walk_sec == 600
     assert d.summary.run_min == 2          # 화면용은 버림
     assert d.hourly.activity_sec[10] == 150
     assert d.hourly.activity_sec[11] == 600
+
+
+def test_머리흔들기와_몸털기를_구분한다():
+    """
+    둘은 다른 행동이고 다른 축으로 간다.
+    머리 흔들기는 귀, 몸 털기는 피부다.
+    """
+    events = to_behavior_events(batch([
+        ev(1, 9.0, BehaviorType.HEAD_SHAKE),
+        ev(2, 9.0, BehaviorType.BODY_SHAKE),
+        ev(3, 9.0, BehaviorType.BODY_SHAKE),
+    ]))
+    d = build_daily_summary(DAY.date(), events, wear_ratio=1.0)
+
+    assert d.summary.head_shake_total == 1
+    assert d.summary.body_shake_total == 2
 
 
 def test_신뢰도_미달_이벤트는_버리고_비율을_남긴다():
@@ -160,10 +191,12 @@ def test_신뢰도_미달_이벤트는_버리고_비율을_남긴다():
 
 
 def test_보수계_값이_있으면_추정치_대신_쓴다():
-    events = to_behavior_events(batch([ev(1, 10.0, BehaviorType.WALK, dur=600.0)]))
+    activity = {10: {"walk_sec": 600, "run_sec": 0, "vigorous_sec": 0}}
 
-    derived = build_daily_summary(DAY.date(), events, wear_ratio=1.0)
-    measured = build_daily_summary(DAY.date(), events, wear_ratio=1.0, steps=1234)
+    derived = build_daily_summary(DAY.date(), [], wear_ratio=1.0, activity=activity)
+    measured = build_daily_summary(
+        DAY.date(), [], wear_ratio=1.0, activity=activity, steps=1234
+    )
 
     assert derived.summary.steps == int(600 * 1.2)
     assert measured.summary.steps == 1234

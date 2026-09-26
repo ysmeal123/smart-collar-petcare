@@ -16,9 +16,8 @@ from pydantic import BaseModel, Field
 from core.weight import ScaleSession
 from core.telemetry import (
     IngestBatch,
-    steps_by_hour,
+    resolved_status,
     to_behavior_events,
-    wear_seconds_by_hour,
 )
 from jobs import pipeline
 from store import db
@@ -44,14 +43,11 @@ def ingest(batch: IngestBatch) -> dict:
         pairs = list(zip(batch.events, [e.ts for e in resolved]))
         inserted = db.insert_events(c, batch.collar_serial, batch.boot_id, pairs)
 
-        # 착용 · 걸음 — 이벤트로는 역산이 안 되는 값들
-        wear = wear_seconds_by_hour(batch)
-        steps = steps_by_hour(batch)
-        for hour, (worn, covered) in wear.items():
-            db.upsert_wear(
-                c, batch.collar_serial, hour.isoformat(),
-                worn, covered, steps.get(hour, 0),
-            )
+        # 상태 표본 — 착용·걸음·활동. 이벤트로는 역산이 안 되는 값들이다.
+        # 접지 않고 표본 그대로 넣는다. 접으면 재전송 시 두 배가 된다.
+        samples = db.insert_status(
+            c, batch.collar_serial, batch.boot_id, resolved_status(batch)
+        )
 
         battery = batch.status[-1].battery if batch.status else None
         db.touch_collar(c, batch.collar_serial, batch.fw_version, battery)
@@ -59,7 +55,7 @@ def ingest(batch: IngestBatch) -> dict:
         return {
             "accepted": inserted,
             "duplicates": len(batch.events) - inserted,
-            "hours_covered": len(wear),
+            "status_samples": samples,
         }
 
 

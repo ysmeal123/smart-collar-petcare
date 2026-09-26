@@ -21,8 +21,8 @@ from core.constants import (
     AXIS_WINDOW_DAYS,
     BASELINE_DAYS,
     MAD_TO_SIGMA,
-    MEAL_HOURS,
     MEDIAN_SE_FACTOR,
+    AXIS_MIN_MAD,
     MIN_MAD,
     NIGHT_HOURS,
     SLEEP_HOURS,
@@ -44,7 +44,9 @@ class ZResult:
         return self.recent / self.baseline
 
 
-def robust_z(baseline: list[float], window: list[float]) -> ZResult:
+def robust_z(
+    baseline: list[float], window: list[float], min_mad: float = MIN_MAD
+) -> ZResult:
     """
         MAD_σ = 1.4826 × median(|x − baseline중앙값|)
         SE    = MAD_σ × 1.253 / √n
@@ -64,7 +66,7 @@ def robust_z(baseline: list[float], window: list[float]) -> ZResult:
     win_med = float(np.median(window))
 
     mad = float(np.median(np.abs(base - base_med))) * MAD_TO_SIGMA
-    se = max(mad, MIN_MAD) * MEDIAN_SE_FACTOR / np.sqrt(len(window))
+    se = max(mad, min_mad) * MEDIAN_SE_FACTOR / np.sqrt(len(window))
 
     return ZResult((win_med - base_med) / se, base_med, win_med)
 
@@ -76,26 +78,31 @@ def valid_mask(days: list[DailySummary]) -> list[bool]:
 
 def extract_metrics(days: list[DailySummary]) -> dict[str, list[float]]:
     """AXIS_WEIGHTS가 참조하는 지표들을 일별 시계열로 뽑아낸다."""
-    post_meal = [h for m in MEAL_HOURS for h in (m, m + 1)]
-
     return {
-        "scratch_night":     [d.summary.scratch_night for d in days],
-        "shake":             [d.summary.shake_total for d in days],
-        "restless":          [d.sleep.restless_count for d in days],
+        # --- 피부 ---
+        "scratch_night":  [d.summary.scratch_night for d in days],
+        "body_shake":     [d.summary.body_shake_total for d in days],
+        # --- 귀 ---
+        "head_shake":     [d.summary.head_shake_total for d in days],
+        # --- 이동성 ---
         # 활동은 반드시 초 단위. 정수 '분'으로 자르면 하루 2~5분 뛰는 개의
         # 신호가 통째로 사라진다.
-        "run_sec":           [d.summary.run_sec for d in days],
-        "walk_sec":          [d.summary.walk_sec for d in days],
-        "activity_sec":      [d.summary.run_sec + d.summary.walk_sec for d in days],
+        "run_sec":        [d.summary.run_sec for d in days],
+        "walk_sec":       [d.summary.walk_sec for d in days],
+        "vigorous_sec":   [d.summary.vigorous_sec for d in days],
+        "activity_sec":   [d.summary.run_sec + d.summary.walk_sec
+                           + d.summary.vigorous_sec for d in days],
+        # --- 수면 ---
+        "restless":       [d.sleep.restless_count for d in days],
         # 깊은 밤(22~04시)의 뒤척임. 통증성 각성에 더 민감하다.
-        "restless_night":    [sum(d.hourly.posture_change[h] for h in NIGHT_HOURS)
-                              for d in days],
-        "shake_post_meal":   [sum(d.hourly.shake[h] for h in post_meal) for d in days],
-        "posture_post_meal": [sum(d.hourly.posture_change[h] for h in post_meal)
-                              for d in days],
-        "sleep_min":         [d.sleep.total_min for d in days],
-        "night_activity":    [sum(d.hourly.activity_sec[h] for h in SLEEP_HOURS)
-                              for d in days],
+        "restless_night": [sum(d.hourly.posture_change[h] for h in NIGHT_HOURS)
+                           for d in days],
+        "sleep_min":      [d.sleep.total_min for d in days],
+        "night_activity": [sum(d.hourly.activity_sec[h] for h in SLEEP_HOURS)
+                           for d in days],
+        # --- 식욕 ---
+        # 로드셀 직접 측정. IMU 추론이 아니라 근거가 가장 강하다.
+        "intake_ratio":   [d.intake_ratio for d in days],
     }
 
 
@@ -133,9 +140,12 @@ def axis_windows(axis: HealthAxis, n_days: int) -> list[tuple[int, int]]:
 def metric_z(
     metrics: dict[str, list[float]], valid: list[bool],
     key: str, lo: int, hi: int, n_days: int,
+    min_mad: float = MIN_MAD,
 ) -> ZResult:
     vals = metrics[key]
-    return robust_z(baseline_slice(vals, valid, n_days), _slice(vals, valid, lo, hi))
+    return robust_z(
+        baseline_slice(vals, valid, n_days), _slice(vals, valid, lo, hi), min_mad
+    )
 
 
 def acute_z(

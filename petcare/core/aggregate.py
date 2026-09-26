@@ -1,7 +1,13 @@
 """
-이벤트 -> 하루치 요약.
+목줄이 올린 것 -> 하루치 요약.
 
-목줄이 올린 행동 이벤트를 알고리즘의 입력 단위인 DailySummary로 접는다.
+입력이 두 갈래다.
+
+    이벤트      짧고 드문 행동. 긁기·머리흔들기·몸털기·자세변경
+    1분 요약    연속 활동. Model A가 센 rest/walk/run/vigorous 초
+
+활동을 이벤트로 받지 않는 이유는 Model A가 1~2초마다 분류하기 때문이다.
+하루 4만 회가 넘는 걸 이벤트로 올리면 배터리도 대역폭도 감당이 안 된다.
 
 이 파일이 중요한 이유: mock 생성기와 실제 센서가 **같은 집계 코드**를 탄다.
 생성기 안에 집계 로직이 따로 있으면 가짜 데이터로 아무리 검증해도
@@ -14,12 +20,7 @@ from datetime import date
 
 import numpy as np
 
-from core.constants import (
-    CONFIDENCE_GATE,
-    NIGHT_HOURS,
-    SLEEP_HOURS,
-    STEPS_PER_WALK_SEC,
-)
+from core.constants import CONFIDENCE_GATE, NIGHT_HOURS, SLEEP_HOURS, STEPS_PER_WALK_SEC
 from core.models import (
     BehaviorEvent,
     BehaviorType,
@@ -42,17 +43,21 @@ class Bins:
     """시간대별 누적. 24칸씩."""
 
     def __init__(self) -> None:
-        self.activity = [0] * 24
+        # 이벤트에서 온다
         self.scratch = [0] * 24
-        self.shake = [0] * 24
+        self.body_shake = [0] * 24
+        self.head_shake = [0] * 24
         self.posture = [0] * 24
-        self.walk_sec = 0.0
-        self.run_sec = 0.0
+        # 1분 요약에서 온다
+        self.activity = [0] * 24
+        self.walk_sec = 0
+        self.run_sec = 0
+        self.vigorous_sec = 0
 
 
 def bin_events(events: list[BehaviorEvent]) -> tuple[Bins, float]:
     """
-    이벤트를 시간대별로 접는다.
+    짧은 행동 이벤트를 시간대별로 접는다.
 
     confidence가 낮은 이벤트는 버린다. 버린 비율을 함께 돌려주는데,
     이 값이 높은 날은 분류기가 헤맸다는 뜻이라 그 날 자체를 의심해야 한다.
@@ -70,18 +75,33 @@ def bin_events(events: list[BehaviorEvent]) -> tuple[Bins, float]:
         h = e.ts.hour
         if e.type is BehaviorType.SCRATCH:
             bins.scratch[h] += 1
-        elif e.type is BehaviorType.SHAKE:
-            bins.shake[h] += 1
+        elif e.type is BehaviorType.BODY_SHAKE:
+            bins.body_shake[h] += 1
+        elif e.type is BehaviorType.HEAD_SHAKE:
+            bins.head_shake[h] += 1
         elif e.type is BehaviorType.POSTURE_CHANGE:
             bins.posture[h] += 1
-        elif e.type is BehaviorType.WALK:
-            bins.activity[h] += int(e.duration_s)
-            bins.walk_sec += e.duration_s
-        elif e.type is BehaviorType.RUN:
-            bins.activity[h] += int(e.duration_s)
-            bins.run_sec += e.duration_s
 
     return bins, low_ratio
+
+
+def apply_activity(bins: Bins, activity: dict[int, dict[str, int]]) -> None:
+    """
+    Model A의 1분 요약을 시간대별 활동으로 접는다.
+
+    activity는 {시(0~23): {walk_sec, run_sec, vigorous_sec, ...}} 형태다.
+    휴식은 활동에 넣지 않는다 - 활동량 지표의 의미가 흐려진다.
+    """
+    for hour, a in activity.items():
+        if not 0 <= hour <= 23:
+            continue
+        w = a.get("walk_sec", 0)
+        r = a.get("run_sec", 0)
+        v = a.get("vigorous_sec", 0)
+        bins.activity[hour] += w + r + v
+        bins.walk_sec += w
+        bins.run_sec += r
+        bins.vigorous_sec += v
 
 
 def estimate_sleep(activity: list[int], posture: list[int]) -> SleepSummary:
@@ -91,6 +111,8 @@ def estimate_sleep(activity: list[int], posture: list[int]) -> SleepSummary:
     목줄에 수면 센서는 없다. 밤 시간대(22~07시)에 움직이지 않은 시간을
     잔 것으로 본다. 뒤척임은 완전한 각성은 아니지만 수면의 질을 깎으므로
     1회당 1.5분을 차감한다.
+
+    '추정 수면'이라고 부르고 '실제 수면시간'이라고 하지 않는다.
     """
     night_activity_sec = sum(activity[h] for h in SLEEP_HOURS)
     restless = sum(posture[h] for h in SLEEP_HOURS)
@@ -111,21 +133,24 @@ def build_daily_summary(
     events: list[BehaviorEvent],
     wear_ratio: float,
     *,
+    activity: dict[int, dict[str, int]] | None = None,
     steps: int | None = None,
     weight_kg: float | None = None,
     food_offered_g: int = 0,
     food_eaten_g: int = 0,
 ) -> DailySummary:
     """
-    하루치 이벤트를 알고리즘 입력으로 접는다.
+    하루치를 알고리즘 입력으로 접는다.
 
     wear_ratio는 이벤트에서 나오지 않는다. 목줄의 착용 감지 신호가 있어야 한다.
     안 움직인 것과 안 찬 것을 구분하지 못하면 착용률 게이트가 무력해진다.
 
-    steps를 주지 않으면 걷기 시간에서 추정한다. 실기기는 보수계 값을 주는 게
+    steps를 주지 않으면 걷기 시간에서 추정한다. 실기기는 보수계 값이
     정확하므로 그쪽을 쓴다.
     """
     bins, low_ratio = bin_events(events)
+    if activity:
+        apply_activity(bins, activity)
 
     if steps is None:
         steps = int(bins.walk_sec * STEPS_PER_WALK_SEC)
@@ -135,21 +160,24 @@ def build_daily_summary(
         hourly=HourlyBins(
             activity_sec=bins.activity,
             scratch=bins.scratch,
-            shake=bins.shake,
+            body_shake=bins.body_shake,
+            head_shake=bins.head_shake,
             posture_change=bins.posture,
         ),
         sleep=estimate_sleep(bins.activity, bins.posture),
         summary=DaySummary(
             steps=steps,
-            walk_sec=int(bins.walk_sec),
-            run_sec=int(bins.run_sec),
+            walk_sec=bins.walk_sec,
+            run_sec=bins.run_sec,
+            vigorous_sec=bins.vigorous_sec,
             # 알고리즘은 초를 쓰고 화면만 분을 쓴다.
             # 분으로 반올림해 저장하면 하루 2~5분 뛰는 개의 신호가 뭉개진다.
-            walk_min=int(bins.walk_sec / 60),
-            run_min=int(bins.run_sec / 60),
+            walk_min=bins.walk_sec // 60,
+            run_min=bins.run_sec // 60,
             scratch_total=sum(bins.scratch),
             scratch_night=sum(bins.scratch[h] for h in NIGHT_HOURS),
-            shake_total=sum(bins.shake),
+            body_shake_total=sum(bins.body_shake),
+            head_shake_total=sum(bins.head_shake),
         ),
         wear_ratio=round(wear_ratio, 3),
         low_confidence_ratio=round(low_ratio, 3),

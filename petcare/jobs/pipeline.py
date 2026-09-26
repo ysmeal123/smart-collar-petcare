@@ -57,12 +57,21 @@ def rollup(conn, collar: str, day: date) -> DailySummary | None:
 
     # 착용률의 분모는 '하루 86400초'가 아니라 '표본이 실제로 설명한 초'다.
     # 기기가 꺼져 있던 시간까지 미착용으로 치면 멀쩡한 날이 통계에서 빠진다.
-    wear_rows = db.wear_of_day(conn, collar, day)
+    wear_rows = db.status_of_day(conn, collar, day)
     worn_sec = sum(r["worn_sec"] for r in wear_rows)
     covered_sec = sum(r["covered_sec"] for r in wear_rows)
     steps = sum(r["steps"] for r in wear_rows)
 
     wear = wear_ratio_from_seconds(worn_sec, covered_sec)
+
+    # Model A 요약을 시(0~23) -> 활동 초 로 편다
+    activity: dict[int, dict[str, int]] = {}
+    for r in wear_rows:
+        activity[r["hour"]] = {
+            "walk_sec": r["walk_sec"],
+            "run_sec": r["run_sec"],
+            "vigorous_sec": r["vigorous_sec"],
+        }
 
     # 체중 - 캐스케이드 외부 루프의 입력.
     # 그날 채택된 값이 없으면 None으로 둔다. 추측해서 채우면
@@ -71,6 +80,7 @@ def rollup(conn, collar: str, day: date) -> DailySummary | None:
 
     summary = build_daily_summary(
         day, events, wear_ratio=wear,
+        activity=activity,
         steps=steps if steps > 0 else None,
         weight_kg=weight,
     )

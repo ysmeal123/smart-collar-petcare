@@ -41,12 +41,33 @@ class BodyCondition(str, Enum):
 
 
 class BehaviorType(str, Enum):
-    """목줄 IMU가 온보드에서 분류해 올려주는 행동 이벤트."""
-    SCRATCH = "scratch"                  # 긁기
-    SHAKE = "shake"                      # 몸 털기
-    WALK = "walk"                        # 걷기
-    RUN = "run"                          # 뛰기
+    """
+    목줄이 **이벤트로** 올리는 행동.
+
+    연속 활동(REST/WALK/RUN/VIGOROUS)은 여기 없다.
+    Model A가 1~2초마다 분류하므로 이벤트로 보내면 하루 수만 건이 된다.
+    활동은 1분 요약(CollarStatus)으로 받는다.
+
+    여기 있는 것은 짧고 드문 행동뿐이다.
+        Model B    SCRATCH / HEAD_SHAKE / BODY_SHAKE
+        Heuristic  POSTURE_CHANGE (중력벡터 변화 + 자이로 회전량)
+    """
+    SCRATCH = "scratch"                  # 긁기 -> 피부
+    HEAD_SHAKE = "head_shake"            # 머리 흔들기 -> 귀
+    BODY_SHAKE = "body_shake"            # 몸 전체 털기 -> 피부 보조
     POSTURE_CHANGE = "posture_change"    # 자세 변경 / 수면 중 뒤척임
+
+
+class ActivityClass(str, Enum):
+    """
+    Model A가 1~2초 창마다 내놓는 활동 강도.
+
+    목줄이 1분 단위로 초를 세어 요약해 올린다. 이벤트가 아니다.
+    """
+    REST = "rest"
+    WALK = "walk"
+    RUN = "run"
+    VIGOROUS = "vigorous"
 
 
 class Allergen(str, Enum):
@@ -97,11 +118,20 @@ class Medication(str, Enum):
 
 
 class HealthAxis(str, Enum):
-    """센서 융합 추론의 4개 축."""
-    SKIN = "skin"        # 피부
-    JOINT = "joint"      # 관절
-    DIGEST = "digest"    # 소화
-    SLEEP = "sleep"      # 수면/인지
+    """
+    웰니스 상태 5개.
+
+    권한이 축마다 다르다 (constants.py 참조).
+        SKIN / MOBILITY   처방 가능
+        SLEEP             종속 - 원인 축이 조용할 때만
+        EAR               알림만. 영양제를 움직이지 않는다
+        APPETITE          차단만. 급락하면 영양제 변경을 막는다
+    """
+    SKIN = "skin"            # 피부
+    MOBILITY = "mobility"    # 이동성 (기존 joint)
+    EAR = "ear"              # 귀
+    SLEEP = "sleep"          # 수면/회복
+    APPETITE = "appetite"    # 식욕/섭취
 
 
 class MealSlot(str, Enum):
@@ -209,9 +239,12 @@ class HourlyBins(BaseModel):
     앱 대시보드가 시간대별 막대그래프를 그려야 하므로
     일별 합계가 아니라 1시간 단위로 모아둔다.
     """
-    activity_sec: list[int] = Field(min_length=24, max_length=24, description="걷기+뛰기 활동 초")
+    activity_sec: list[int] = Field(
+        min_length=24, max_length=24, description="걷기+뛰기+고강도 활동 초"
+    )
     scratch: list[int] = Field(min_length=24, max_length=24)
-    shake: list[int] = Field(min_length=24, max_length=24)
+    body_shake: list[int] = Field(min_length=24, max_length=24)
+    head_shake: list[int] = Field(min_length=24, max_length=24)
     posture_change: list[int] = Field(min_length=24, max_length=24)
 
 
@@ -230,13 +263,15 @@ class DaySummary(BaseModel):
     # 완만한 활동량 감소를 놓치게 된다.
     walk_sec: int
     run_sec: int
+    vigorous_sec: int = 0
 
     # 앱 표시용 (분)
     walk_min: int
     run_min: int
     scratch_total: int
     scratch_night: int = Field(description="22시~04시 긁기. 피부축의 핵심 지표")
-    shake_total: int
+    body_shake_total: int = 0
+    head_shake_total: int = Field(default=0, description="귀축의 유일한 지표")
 
 
 class DailySummary(BaseModel):
@@ -282,7 +317,14 @@ class SensorDataset(BaseModel):
     profile: DogProfile
     scenario: str
     days: list[DailySummary]
-    events: list[BehaviorEvent] = Field(default_factory=list, description="원본 타임라인(디버깅용)")
+    events: list[BehaviorEvent] = Field(
+        default_factory=list, description="짧은 행동 이벤트 원본(디버깅용)"
+    )
+    activity: dict[str, dict[int, dict[str, int]]] = Field(
+        default_factory=dict,
+        description="날짜(ISO) -> 시(0~23) -> {walk_sec, run_sec, vigorous_sec}. "
+                    "Model A의 1분 요약을 시간대별로 접은 것",
+    )
 
 
 # ---------------------------------------------------------------------------

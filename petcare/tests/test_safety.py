@@ -250,14 +250,39 @@ def test_모든_처방에_근거가_남는다():
 # 추론 규칙
 # ---------------------------------------------------------------------------
 
-def test_소화축은_처방권한이_없다():
-    """근거가 약하고 피부축과 교차 오염되므로 참고 지표로만 쓴다."""
+def test_귀축과_식욕축은_영양제를_움직이지_않는다():
+    """
+    귀는 알림만, 식욕은 차단만 한다.
+
+    머리 흔들기는 외이염 신호일 수 있지만 그건 병원에 갈 문제지
+    영양으로 덮을 문제가 아니다. 영양제로 가리면 진료가 늦어진다.
+    밥을 안 먹는 개에게 영양제를 늘리는 것도 위험하다.
+    """
+    from core.constants import OBSERVATION_ONLY_AXES
+
     for scenario in ("skin", "joint", "normal", "acute"):
         ds = generate(scenario)
         rx, _ = prescribe(ds.profile, ds.days)
 
-        digest = next(a for a in rx.axes if a.axis is HealthAxis.DIGEST)
-        assert not digest.active, f"[{scenario}] 소화축이 처방을 발생시켰다"
+        for axis in OBSERVATION_ONLY_AXES:
+            score = next(a for a in rx.axes if a.axis is axis)
+            assert not score.active, f"[{scenario}] {axis.value} 축이 처방을 발생시켰다"
+
+
+def test_귀축은_희소해도_쉽게_발화하지_않는다():
+    """
+    정상 개는 머리를 하루 0~2회 흔든다. baseline MAD가 0에 가까워
+    공통 하한(0.5)을 쓰면 하루 두 번만 흔들어도 z가 폭발한다.
+    분류기 오탐 몇 건이 그대로 축 발화가 되는 것을 막아야 한다.
+    """
+    from core.constants import AXIS_MIN_MAD, MIN_MAD
+
+    assert AXIS_MIN_MAD[HealthAxis.EAR] > MIN_MAD, "귀축 하한이 공통값과 같다"
+
+    ds = generate("normal")
+    rx, _ = prescribe(ds.profile, ds.days)
+    ear = next(a for a in rx.axes if a.axis is HealthAxis.EAR)
+    assert abs(ear.z_score) < 2.0, f"건강한 개에서 귀축이 튀었다 (z={ear.z_score})"
 
 
 def test_수면축은_원인축이_있으면_억제된다(skin_case):
@@ -298,7 +323,7 @@ def test_오메가3는_두_축이_요구해도_합산하지_않는다():
     from core.constants import AXIS_DOSE
 
     skin_dose = AXIS_DOSE[HealthAxis.SKIN]["omega3"]
-    joint_dose = AXIS_DOSE[HealthAxis.JOINT]["omega3"]
+    joint_dose = AXIS_DOSE[HealthAxis.MOBILITY]["omega3"]
 
     ds = generate("skin")
     rx, _ = prescribe(ds.profile, ds.days)
@@ -405,7 +430,7 @@ def test_관절수술이력이_기준선을_낮춘다(skin_case):
     rx_plain, _ = prescribe(plain, skin_case.days)
     rx_op, _ = prescribe(operated, skin_case.days)
 
-    z_plain = next(a.z_score for a in rx_plain.axes if a.axis is HealthAxis.JOINT)
-    z_op = next(a.z_score for a in rx_op.axes if a.axis is HealthAxis.JOINT)
+    z_plain = next(a.z_score for a in rx_plain.axes if a.axis is HealthAxis.MOBILITY)
+    z_op = next(a.z_score for a in rx_op.axes if a.axis is HealthAxis.MOBILITY)
 
     assert z_op < z_plain, "수술 이력이 관절축 기준선을 낮추지 않았다"

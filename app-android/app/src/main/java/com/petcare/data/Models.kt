@@ -79,9 +79,10 @@ data class AxisScore(
     val label: String
         get() = when (axis) {
             "skin" -> "피부"
-            "joint" -> "관절"
-            "sleep" -> "수면·인지"
-            "digest" -> "소화"
+            "mobility" -> "이동성"
+            "ear" -> "귀"
+            "sleep" -> "수면·회복"
+            "appetite" -> "식욕"
             else -> axis
         }
 }

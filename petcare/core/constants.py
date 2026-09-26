@@ -63,7 +63,7 @@ CARTRIDGES: list[CartridgeSpec] = [
         max_pellets_per_day=20,
         meal_slot=MealSlot.MORNING,
         onset_weeks=6,
-        axes=[HealthAxis.SKIN, HealthAxis.JOINT],
+        axes=[HealthAxis.SKIN, HealthAxis.MOBILITY],
     ),
     CartridgeSpec(
         slot=2, id="skin_barrier", name="피부장벽", color="#F2C94C",
@@ -82,7 +82,7 @@ CARTRIDGES: list[CartridgeSpec] = [
         max_pellets_per_day=20,
         meal_slot=MealSlot.EVENING,
         onset_weeks=5,
-        axes=[HealthAxis.JOINT],
+        axes=[HealthAxis.MOBILITY],
     ),
     CartridgeSpec(
         slot=4, id="gut", name="장건강", color="#27AE60",
@@ -90,7 +90,9 @@ CARTRIDGES: list[CartridgeSpec] = [
         max_pellets_per_day=10,
         meal_slot=MealSlot.MORNING,
         onset_weeks=2,
-        axes=[HealthAxis.DIGEST],
+        # 축이 없다. 소화축은 근거가 취약해 제거했고,
+        # 이 카트리지는 문진(GUT_TRIGGERS)으로만 처방된다.
+        axes=[],
     ),
     CartridgeSpec(
         slot=5, id="calm", name="진정·수면", color="#9B51E0",
@@ -117,7 +119,7 @@ CARTRIDGES: list[CartridgeSpec] = [
         meal_slot=MealSlot.MORNING,
         onset_weeks=6,
         # 1번(어유)이 생선 알러지로 차단됐을 때 자동 대체된다
-        axes=[HealthAxis.SKIN, HealthAxis.JOINT],
+        axes=[HealthAxis.SKIN, HealthAxis.MOBILITY],
     ),
 ]
 
@@ -220,10 +222,12 @@ BLOCKED_BY_ALLERGY: dict[Allergen, list[str]] = {
 #   십자인대 수술한 개는 원래 덜 뛴다.
 #   이걸 모르면 "관절 악화 중"으로 오판해 영양제를 계속 늘리게 된다.
 SURGERY_EFFECT: dict[SurgeryType, dict] = {
-    SurgeryType.PATELLA:  {"axis": HealthAxis.JOINT, "baseline_shift": -0.8, "prime": "joint"},
-    SurgeryType.CRUCIATE: {"axis": HealthAxis.JOINT, "baseline_shift": -1.0, "prime": "joint"},
-    SurgeryType.DISC:     {"axis": HealthAxis.JOINT, "baseline_shift": -0.7, "prime": "joint"},
-    SurgeryType.GI:       {"axis": HealthAxis.DIGEST, "baseline_shift": -0.3, "prime": "gut"},
+    SurgeryType.PATELLA:  {"axis": HealthAxis.MOBILITY, "baseline_shift": -0.8, "prime": "joint"},
+    SurgeryType.CRUCIATE: {"axis": HealthAxis.MOBILITY, "baseline_shift": -1.0, "prime": "joint"},
+    SurgeryType.DISC:     {"axis": HealthAxis.MOBILITY, "baseline_shift": -0.7, "prime": "joint"},
+    # 소화기 수술은 축을 바꾸지 않는다. 소화축이 없어졌기 때문이다.
+    # 장건강 카트리지를 후보로 올리는 역할만 한다.
+    SurgeryType.GI:       {"axis": None, "baseline_shift": 0.0, "prime": "gut"},
 }
 
 # 알러지가 축 민감도에 미치는 영향 (이미 알러지 체질이면 더 빨리 잡는다)
@@ -334,16 +338,18 @@ PERSISTENCE_WEEKS = 2
 # 최소 2주는 관찰한 뒤에 처방하도록 통일한다.
 AXIS_WINDOW_DAYS: dict[HealthAxis, int] = {
     HealthAxis.SKIN: 7,
-    HealthAxis.JOINT: 14,     # 만성·저신호 -> 창을 두 배로
-    HealthAxis.DIGEST: 7,
+    HealthAxis.MOBILITY: 14,   # 만성·저신호 -> 창을 두 배로
+    HealthAxis.EAR: 7,
     HealthAxis.SLEEP: 7,
+    HealthAxis.APPETITE: 3,    # 섭취 급락은 빨리 잡아야 한다
 }
 
 AXIS_PERSISTENCE: dict[HealthAxis, int] = {
     HealthAxis.SKIN: 2,
-    HealthAxis.JOINT: 1,      # 이미 14일을 봤으므로 1회로 충분
-    HealthAxis.DIGEST: 2,
+    HealthAxis.MOBILITY: 1,    # 이미 14일을 봤으므로 1회로 충분
+    HealthAxis.EAR: 2,
     HealthAxis.SLEEP: 2,
+    HealthAxis.APPETITE: 1,    # 차단 전용이라 빠르게 반응해도 안전하다
 }
 
 # 급여 시각. 식후 2시간이 소화축의 관찰 구간이 된다.
@@ -354,25 +360,34 @@ SLEEP_HOURS = [22, 23, 0, 1, 2, 3, 4, 5, 6]              # 수면 창 (22시~07�
 POST_MEAL_HOURS = 2                                      # 식후 몇 시간을 볼지
 
 # ---------------------------------------------------------------------------
-# 어떤 축이 처방 권한을 갖는가
+# 축마다 권한이 다르다
+#
+# 다섯 축 중 영양제를 실제로 움직일 수 있는 건 두 개뿐이다.
+# 센서로 추론 가능한 것만 처방한다는 원칙을 축 단위로 강제한 결과다.
 # ---------------------------------------------------------------------------
 
-# 소화축은 처방 트리거에서 제외한다.
-#
-# "식후 몸털기 = 소화 불편"은 4개 축 중 수의학적 근거가 가장 약하고,
-# 실제로 피부축과 지표를 공유해 교차 오염된다.
-# (피부염으로 하루 종일 몸을 털면 식후 몸털기도 함께 늘어난다)
-# 시스템 원칙 "센서로 추론 가능한 것만 처방한다"를 엄격히 적용한 결과다.
-#
-# 소화축은 앱에 '참고 지표'로만 표시하고, 장건강 카트리지는
-# 문진 기반(GUT_TRIGGERS)으로 처방한다.
+# 처방 권한이 있는 축.
+# SLEEP은 여기 있지만 AXIS_SUPPRESSED_BY로 조건이 걸린다.
 PRESCRIBING_AXES: list[HealthAxis] = [
     HealthAxis.SKIN,
-    HealthAxis.JOINT,
+    HealthAxis.MOBILITY,
     HealthAxis.SLEEP,
 ]
 
-OBSERVATION_ONLY_AXES: list[HealthAxis] = [HealthAxis.DIGEST]
+# 알림만 한다. 영양제를 움직이지 않는다.
+#
+# 머리 흔들기는 외이염의 신호일 수 있지만, 그건 영양으로 다룰 문제가 아니라
+# 병원에 가야 할 문제다. 영양제로 덮으면 진료가 늦어진다.
+ALERT_ONLY_AXES: list[HealthAxis] = [HealthAxis.EAR]
+
+# 차단만 한다. 발화하면 영양제 변경 자체를 막는다.
+#
+# 밥을 안 먹는 개에게 영양제를 늘리는 건 위험하다.
+# 원인을 모르는 채 조성을 바꾸면 상태를 더 흐린다.
+BLOCKING_AXES: list[HealthAxis] = [HealthAxis.APPETITE]
+
+# 앱에 표시는 하되 처방하지 않는 축 전부
+OBSERVATION_ONLY_AXES: list[HealthAxis] = ALERT_ONLY_AXES + BLOCKING_AXES
 
 # 종속 축 억제.
 #
@@ -381,7 +396,24 @@ OBSERVATION_ONLY_AXES: list[HealthAxis] = [HealthAxis.DIGEST]
 # 원인 축이 이미 처방 중이면 수면축 처방은 보류하고, 원인이 해결된 뒤에
 # 그래도 수면이 나쁘면 그때 처방한다.
 AXIS_SUPPRESSED_BY: dict[HealthAxis, list[HealthAxis]] = {
-    HealthAxis.SLEEP: [HealthAxis.SKIN, HealthAxis.JOINT],
+    HealthAxis.SLEEP: [HealthAxis.SKIN, HealthAxis.MOBILITY, HealthAxis.EAR],
+}
+
+# 축별 MAD 하한.
+#
+# 희소 이벤트는 baseline MAD가 0이 되어 z가 발산한다.
+# 특히 귀축이 그렇다 - 정상 개는 머리를 하루 0~2회 흔든다.
+# 공통 하한(0.5)을 쓰면 하루 두 번 흔든 게 z=+8로 나오고,
+# 분류기 오탐 몇 건이 그대로 축 발화가 된다.
+#
+# 섭취율은 0~1 비율이라 스케일 자체가 다르다. 하한을 훨씬 작게 잡아야
+# 신호가 살아남는다.
+AXIS_MIN_MAD: dict[HealthAxis, float] = {
+    HealthAxis.SKIN: 0.5,
+    HealthAxis.MOBILITY: 0.5,
+    HealthAxis.EAR: 2.0,       # 희소 -> 하한을 높여 오탐을 막는다
+    HealthAxis.SLEEP: 0.5,
+    HealthAxis.APPETITE: 0.05,  # 비율 스케일
 }
 
 # 장건강 카트리지의 처방 조건 (IMU가 아니라 문진 기반)
@@ -397,28 +429,33 @@ GUT_TRIGGERS = {
 AXIS_WEIGHTS: dict[HealthAxis, dict[str, float]] = {
     HealthAxis.SKIN: {
         "scratch_night": 0.5,
-        "shake": 0.3,
-        "restless": 0.2,
-    },
-    HealthAxis.JOINT: {
-        # 분 단위로 자르면 하루 2~5분만 뛰는 개의 신호가 뭉개진다. 초 단위를 쓴다.
-        "run_sec": -0.5,
-        "walk_sec": -0.3,
+        "body_shake": 0.3,      # 가려우면 몸을 턴다
         "restless_night": 0.2,
     },
-    HealthAxis.DIGEST: {
-        "shake_post_meal": 0.6,
-        "posture_post_meal": 0.4,
+    HealthAxis.MOBILITY: {
+        # 분 단위로 자르면 하루 2~5분만 뛰는 개의 신호가 뭉개진다. 초 단위를 쓴다.
+        "run_sec": -0.35,
+        "walk_sec": -0.25,
+        "vigorous_sec": -0.25,
+        "restless_night": 0.15,  # 아프면 밤에 뒤척인다
+    },
+    HealthAxis.EAR: {
+        # 지표가 하나뿐이다. 그래서 AXIS_MIN_MAD를 높게 잡았다.
+        "head_shake": 1.0,
     },
     HealthAxis.SLEEP: {
         "restless": 0.5,
         "sleep_min": -0.3,
         "night_activity": 0.2,
     },
+    HealthAxis.APPETITE: {
+        # 로드셀 직접 측정. IMU 추론이 아니라서 근거가 가장 강하다.
+        "intake_ratio": -1.0,
+    },
 }
 
 # 크기별 관절축 민감도 (소형=슬개골, 대형=고관절 호발)
-SIZE_JOINT_SENSITIVITY = {
+SIZE_MOBILITY_SENSITIVITY = {
     DogSize.SMALL: 1.15,
     DogSize.MEDIUM: 1.0,
     DogSize.LARGE: 1.20,
@@ -437,7 +474,7 @@ AXIS_DOSE: dict[HealthAxis, dict[str, float]] = {
         "omega3": 60.0,        # mg EPA+DHA / kg
         "skin_barrier": 0.4,   # mg zinc / kg
     },
-    HealthAxis.JOINT: {
+    HealthAxis.MOBILITY: {
         "omega3": 50.0,
         "joint": 15.0,         # mg glucosamine / kg
     },

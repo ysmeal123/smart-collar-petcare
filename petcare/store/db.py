@@ -58,15 +58,25 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(collar, ts);
 
--- 시간대별 착용 초와 걸음 수. 이벤트로는 역산이 안 되는 값들이다.
-CREATE TABLE IF NOT EXISTS wear (
-    collar      TEXT NOT NULL,
-    hour        TEXT NOT NULL,         -- ISO, 시 단위로 자른 값
-    worn_sec    INTEGER NOT NULL,
-    covered_sec INTEGER NOT NULL,      -- 표본이 실제로 설명한 초. 착용률의 분모다
-    steps       INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (collar, hour)
+-- 목줄의 1분 상태 표본. 접지 않고 표본 그대로 쌓는다.
+--
+-- 시간대로 미리 접으면 멱등성이 사라진다. 게이트웨이가 같은 묶음을 다시
+-- 올렸을 때 이벤트는 기본키가 막아주는데 활동만 두 배가 되는 사고가 난다.
+-- 활동이 부풀려지면 이동성 축이 '더 건강해졌다'고 읽는다.
+CREATE TABLE IF NOT EXISTS status_samples (
+    collar       TEXT NOT NULL,
+    boot_id      INTEGER NOT NULL,
+    t_ms         INTEGER NOT NULL,
+    ts           TEXT NOT NULL,
+    worn_sec     INTEGER NOT NULL,
+    steps        INTEGER NOT NULL DEFAULT 0,
+    walk_sec     INTEGER NOT NULL DEFAULT 0,
+    run_sec      INTEGER NOT NULL DEFAULT 0,
+    vigorous_sec INTEGER NOT NULL DEFAULT 0,
+    rest_sec     INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (collar, boot_id, t_ms)
 );
+CREATE INDEX IF NOT EXISTS idx_status_ts ON status_samples(collar, ts);
 
 -- 체중 측정. 급여량 캐스케이드 제어의 외부 루프 입력이다.
 -- 소스를 남긴다 - 체중계 추정과 보호자 입력은 신뢰도가 다르다.
@@ -195,22 +205,26 @@ def insert_events(c: sqlite3.Connection, collar: str, boot_id: int, rows: list) 
     return c.total_changes - before
 
 
-def upsert_wear(c: sqlite3.Connection, collar: str, hour_iso: str,
-                worn_sec: int, covered_sec: int, steps: int) -> None:
+def insert_status(c: sqlite3.Connection, collar: str, boot_id: int, rows: list) -> int:
     """
-    같은 시간대가 또 오면 더한다. 목줄이 1분 표본을 나눠 보내기 때문이다.
+    상태 표본을 그대로 넣는다. 중복은 기본키가 막는다.
 
-    한 시간을 넘지 않게 자른다. 재전송으로 같은 분이 두 번 들어와도
-    착용률이 100%를 넘지 않는다.
+    rows: [(CollarStatus, 실시각), ...]
+    반환: 실제로 새로 들어간 개수
     """
-    c.execute(
-        "INSERT INTO wear(collar, hour, worn_sec, covered_sec, steps) VALUES(?,?,?,?,?) "
-        "ON CONFLICT(collar, hour) DO UPDATE SET "
-        "  worn_sec    = MIN(3600, wear.worn_sec + excluded.worn_sec), "
-        "  covered_sec = MIN(3600, wear.covered_sec + excluded.covered_sec), "
-        "  steps       = wear.steps + excluded.steps",
-        (collar, hour_iso, worn_sec, covered_sec, steps),
+    before = c.total_changes
+    c.executemany(
+        "INSERT OR IGNORE INTO status_samples"
+        "(collar, boot_id, t_ms, ts, worn_sec, steps, "
+        " walk_sec, run_sec, vigorous_sec, rest_sec) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?)",
+        [
+            (collar, boot_id, st.t_ms, ts.isoformat(), st.worn_sec, st.steps,
+             st.walk_sec, st.run_sec, st.vigorous_sec, st.rest_sec)
+            for st, ts in rows
+        ],
     )
+    return c.total_changes - before
 
 
 def events_of_day(c: sqlite3.Connection, collar: str, day: date) -> list[sqlite3.Row]:
@@ -221,11 +235,22 @@ def events_of_day(c: sqlite3.Connection, collar: str, day: date) -> list[sqlite3
     ).fetchall()
 
 
-def wear_of_day(c: sqlite3.Connection, collar: str, day: date) -> list[sqlite3.Row]:
+def status_of_day(c: sqlite3.Connection, collar: str, day: date) -> list[sqlite3.Row]:
+    """
+    하루치 표본을 시간대별로 접어서 돌려준다.
+
+    covered_sec 는 표본 개수 x 60 이다. 도착한 표본만 분모로 잡아야
+    기기가 꺼져 있던 시간이 '미착용'으로 계산되지 않는다.
+    """
     return c.execute(
-        "SELECT hour, worn_sec, covered_sec, steps FROM wear "
-        "WHERE collar=? AND hour >= ? AND hour < ? ORDER BY hour",
-        (collar, f"{day}T00:00:00", f"{day}T23:59:59"),
+        "SELECT CAST(strftime('%H', ts) AS INTEGER) AS hour, "
+        "       SUM(worn_sec) AS worn_sec, COUNT(*) * 60 AS covered_sec, "
+        "       SUM(steps) AS steps, SUM(walk_sec) AS walk_sec, "
+        "       SUM(run_sec) AS run_sec, SUM(vigorous_sec) AS vigorous_sec "
+        "FROM status_samples "
+        "WHERE collar=? AND ts >= ? AND ts < ? "
+        "GROUP BY hour ORDER BY hour",
+        (collar, f"{day}T00:00:00", f"{day}T23:59:59.999999"),
     ).fetchall()
 
 
