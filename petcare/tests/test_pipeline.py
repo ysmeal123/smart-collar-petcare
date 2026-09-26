@@ -231,14 +231,19 @@ def test_44일을_밀어넣으면_처방이_나온다(conn):
         push(conn, day, events, activity=ds.activity.get(day.isoformat()))
         pipeline.rollup(conn, COLLAR, day)
 
-    rx = pipeline.recompute(conn, ds.profile.dog_id)
+    plan = pipeline.recompute(conn, ds.profile.dog_id)
 
-    assert rx is not None
-    assert rx["food_grams"] > 0
+    assert plan is not None
+    assert plan["total_food_g"] > 0
     # 피부 시나리오이므로 피부 축이 발화해야 한다
-    fired = [a["axis"] for a in rx["axes"] if a["active"]]
-    assert "skin" in fired
-    assert any(it["cartridge_id"] == "omega3" for it in rx["items"])
+    assert "skin" in plan["attention"]
+
+    pellets = [p for m in plan["meals"] for p in m["pellets"]]
+    assert any(p["cartridge_id"] == "omega3" for p in pellets)
+
+    # 최종 출력에는 시뮬레이션과 근거가 함께 들어 있다
+    assert plan["simulation"] is not None
+    assert plan["trace"]
 
 
 def test_사출_명령이_끼니별로_쪼개진다(conn):
@@ -253,10 +258,10 @@ def test_사출_명령이_끼니별로_쪼개진다(conn):
         push(conn, day, events, activity=ds.activity.get(day.isoformat()))
         pipeline.rollup(conn, COLLAR, day)
 
-    rx = pipeline.recompute(conn, ds.profile.dog_id)
+    plan = pipeline.recompute(conn, ds.profile.dog_id)
     tomorrow = ds.days[-1].date + timedelta(days=1)
 
-    n = pipeline.enqueue_dispense(conn, ds.profile.dog_id, tomorrow, [8, 19])
+    n = pipeline.enqueue_dispense(conn, ds.profile.dog_id, tomorrow)
     assert n == 2
 
     cmds = db.pending_commands(
@@ -264,7 +269,7 @@ def test_사출_명령이_끼니별로_쪼개진다(conn):
         datetime.combine(tomorrow, datetime.min.time()) + timedelta(hours=7),
     )
     total_food = sum(c["food_g"] for c in cmds)
-    assert total_food == rx["food_grams"]      # 나눠도 총량은 보존된다
+    assert total_food == plan["total_food_g"]      # 나눠도 총량은 보존된다
 
 
 def test_같은_끼니를_두_번_적재하지_않는다(conn):
@@ -279,8 +284,8 @@ def test_같은_끼니를_두_번_적재하지_않는다(conn):
     pipeline.rollup(conn, COLLAR, day)
     pipeline.recompute(conn, ds.profile.dog_id)
 
-    first = pipeline.enqueue_dispense(conn, ds.profile.dog_id, day, [8, 19])
-    again = pipeline.enqueue_dispense(conn, ds.profile.dog_id, day, [8, 19])
+    first = pipeline.enqueue_dispense(conn, ds.profile.dog_id, day)
+    again = pipeline.enqueue_dispense(conn, ds.profile.dog_id, day)
 
     assert first == 2
     assert again == 0
@@ -297,11 +302,13 @@ def test_만료된_명령은_내려가지_않는다(conn):
          activity=ds.activity.get(day.isoformat()))
     pipeline.rollup(conn, COLLAR, day)
     pipeline.recompute(conn, ds.profile.dog_id)
-    pipeline.enqueue_dispense(conn, ds.profile.dog_id, day, [8])
+    pipeline.enqueue_dispense(conn, ds.profile.dog_id, day)
 
     base = datetime.combine(day, datetime.min.time())
-    assert len(db.pending_commands(conn, ds.profile.dog_id, base + timedelta(hours=8))) == 1
-    assert len(db.pending_commands(conn, ds.profile.dog_id, base + timedelta(hours=18))) == 0
+    # 08시 급여는 10시에 만료된다. 저녁 급여(19시)는 아직 살아 있다.
+    assert len(db.pending_commands(conn, ds.profile.dog_id, base + timedelta(hours=8))) == 2
+    assert len(db.pending_commands(conn, ds.profile.dog_id, base + timedelta(hours=11))) == 1
+    assert len(db.pending_commands(conn, ds.profile.dog_id, base + timedelta(hours=22))) == 0
 
 
 def test_뒤늦게_온_데이터가_그_날짜에_반영된다(conn):

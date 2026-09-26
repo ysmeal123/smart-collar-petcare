@@ -78,6 +78,22 @@ CREATE TABLE IF NOT EXISTS status_samples (
 );
 CREATE INDEX IF NOT EXISTS idx_status_ts ON status_samples(collar, ts);
 
+-- 식사 한 번. 밥그릇 로드셀이 잰다.
+-- 목줄이 Energy OUT, 밥통이 Energy IN 을 잰다. 둘이 있어야 수지가 닫힌다.
+CREATE TABLE IF NOT EXISTS meal_intake (
+    dog_id       TEXT NOT NULL,
+    started_at   TEXT NOT NULL,
+    ended_at     TEXT,
+    dispensed_g  REAL NOT NULL,
+    leftover_g   REAL,
+    eaten_g      INTEGER NOT NULL,
+    ratio        REAL NOT NULL,
+    duration_min REAL,
+    note         TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (dog_id, started_at)
+);
+CREATE INDEX IF NOT EXISTS idx_intake ON meal_intake(dog_id, started_at);
+
 -- 체중 측정. 급여량 캐스케이드 제어의 외부 루프 입력이다.
 -- 소스를 남긴다 - 체중계 추정과 보호자 입력은 신뢰도가 다르다.
 CREATE TABLE IF NOT EXISTS weights (
@@ -110,6 +126,26 @@ CREATE TABLE IF NOT EXISTS prescriptions (
     created_at   TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_rx ON prescriptions(dog_id, date);
+
+-- 보호자 답변. 구조화된 값만 담는다. 자연어는 여기까지 오지 않는다.
+CREATE TABLE IF NOT EXISTS guardian_context (
+    dog_id      TEXT NOT NULL,
+    key         TEXT NOT NULL,
+    value       TEXT NOT NULL,
+    answered_at TEXT NOT NULL,
+    PRIMARY KEY (dog_id, key)
+);
+
+-- 급여 계획. 최종 출력을 그대로 보관한다.
+-- 시뮬레이션 결과가 안에 들어 있어 "왜 그 계획이 통과했는가"를 나중에 볼 수 있다.
+CREATE TABLE IF NOT EXISTS plans (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    dog_id     TEXT NOT NULL,
+    date       TEXT NOT NULL,
+    payload    TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_plans ON plans(dog_id, date);
 
 -- 밥통에 내릴 사출 명령.
 CREATE TABLE IF NOT EXISTS dispense_commands (
@@ -255,6 +291,38 @@ def status_of_day(c: sqlite3.Connection, collar: str, day: date) -> list[sqlite3
 
 
 # ---------------------------------------------------------------------------
+# 섭취량
+# ---------------------------------------------------------------------------
+
+def save_meal(c: sqlite3.Connection, dog_id: str, started_at: datetime,
+              ended_at: datetime | None, dispensed_g: float,
+              leftover_g: float | None, result) -> None:
+    """같은 식사를 다시 올리면 덮어쓴다. 식사 종료 보고가 나중에 오기 때문이다."""
+    c.execute(
+        "INSERT INTO meal_intake"
+        "(dog_id, started_at, ended_at, dispensed_g, leftover_g, "
+        " eaten_g, ratio, duration_min, note) VALUES(?,?,?,?,?,?,?,?,?) "
+        "ON CONFLICT(dog_id, started_at) DO UPDATE SET "
+        "  ended_at=excluded.ended_at, leftover_g=excluded.leftover_g, "
+        "  eaten_g=excluded.eaten_g, ratio=excluded.ratio, "
+        "  duration_min=excluded.duration_min, note=excluded.note",
+        (dog_id, started_at.isoformat(),
+         ended_at.isoformat() if ended_at else None,
+         dispensed_g, leftover_g, result.eaten_g, result.ratio,
+         result.duration_min, result.note),
+    )
+
+
+def meals_of_day(c: sqlite3.Connection, dog_id: str, day: date) -> list[sqlite3.Row]:
+    return c.execute(
+        "SELECT started_at, ended_at, dispensed_g, leftover_g, eaten_g, "
+        "       ratio, duration_min, note FROM meal_intake "
+        "WHERE dog_id=? AND started_at >= ? AND started_at < ? ORDER BY started_at",
+        (dog_id, f"{day}T00:00:00", f"{day}T23:59:59.999999"),
+    ).fetchall()
+
+
+# ---------------------------------------------------------------------------
 # 체중
 # ---------------------------------------------------------------------------
 
@@ -349,6 +417,48 @@ def latest_state(c: sqlite3.Connection, dog_id: str) -> dict:
         (dog_id,),
     ).fetchone()
     return json.loads(row["state"]) if row else {}
+
+
+# ---------------------------------------------------------------------------
+# 보호자 맥락 · 급여 계획
+# ---------------------------------------------------------------------------
+
+def save_answers(c: sqlite3.Connection, dog_id: str, answers: dict[str, str]) -> None:
+    now = datetime.now().isoformat(timespec="seconds")
+    c.executemany(
+        "INSERT INTO guardian_context(dog_id, key, value, answered_at) "
+        "VALUES(?,?,?,?) ON CONFLICT(dog_id, key) DO UPDATE SET "
+        "  value=excluded.value, answered_at=excluded.answered_at",
+        [(dog_id, k, v, now) for k, v in answers.items()],
+    )
+
+
+def load_context(c: sqlite3.Connection, dog_id: str) -> tuple[dict[str, str], str | None]:
+    rows = c.execute(
+        "SELECT key, value, answered_at FROM guardian_context WHERE dog_id=?",
+        (dog_id,),
+    ).fetchall()
+    if not rows:
+        return {}, None
+    return (
+        {r["key"]: r["value"] for r in rows},
+        max(r["answered_at"] for r in rows),
+    )
+
+
+def save_plan_record(c: sqlite3.Connection, dog_id: str, day: date, payload: str) -> None:
+    c.execute(
+        "INSERT INTO plans(dog_id, date, payload, created_at) VALUES(?,?,?,?)",
+        (dog_id, str(day), payload, datetime.now().isoformat(timespec="seconds")),
+    )
+
+
+def latest_plan(c: sqlite3.Connection, dog_id: str) -> dict | None:
+    row = c.execute(
+        "SELECT payload FROM plans WHERE dog_id=? ORDER BY id DESC LIMIT 1",
+        (dog_id,),
+    ).fetchone()
+    return json.loads(row["payload"]) if row else None
 
 
 # ---------------------------------------------------------------------------

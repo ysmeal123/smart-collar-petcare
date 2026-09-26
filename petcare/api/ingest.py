@@ -10,9 +10,13 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
+import json
+
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
+from core.intake import MealReading, evaluate
 from core.weight import ScaleSession
 from core.telemetry import (
     IngestBatch,
@@ -103,6 +107,62 @@ def run_daily_job(
 
 
 # ---------------------------------------------------------------------------
+# 섭취량 — 밥그릇 로드셀
+# ---------------------------------------------------------------------------
+
+class MealIn(BaseModel):
+    """
+    식사 한 번. 밥통이 배식 직후와 식사 종료 후를 재서 올린다.
+
+    식사가 끝나기 전에 먼저 올려도 된다(ended_at/leftover_g 없이).
+    끝난 뒤 같은 started_at 으로 다시 올리면 덮어쓴다.
+    """
+
+    started_at: datetime
+    ended_at: datetime | None = None
+    dispensed_g: float = Field(gt=0)
+    leftover_g: float | None = Field(default=None, ge=0)
+
+
+@router.post("/feeder/{dog_id}/intake")
+def feeder_intake(dog_id: str, meal: MealIn) -> dict:
+    """
+    처방한 양과 실제 먹은 양은 다르다.
+
+    이 차이를 모르면 밥을 안 먹는 개에게 영양제를 늘리게 되고,
+    긴급 정지 규칙(3일 연속 섭취 70% 미만)이 영영 발동하지 않는다.
+    """
+    with db.connect() as c:
+        if db.get_dog(c, dog_id) is None:
+            raise HTTPException(404, "등록되지 않은 개체입니다")
+
+        reading = MealReading(
+            started_at=meal.started_at, ended_at=meal.ended_at,
+            dispensed_g=meal.dispensed_g, leftover_g=meal.leftover_g,
+        )
+        r = evaluate(reading)
+        db.save_meal(c, dog_id, meal.started_at, meal.ended_at,
+                     meal.dispensed_g, meal.leftover_g, r)
+
+        return {
+            "offered_g": r.offered_g, "eaten_g": r.eaten_g,
+            "ratio": r.ratio, "skipped": r.skipped, "note": r.note,
+        }
+
+
+@router.get("/dogs/{dog_id}/intake")
+def intake_history(dog_id: str, days: int = 14) -> dict:
+    """식사 이력. 앱의 식욕 화면과 긴급정지 근거 표시에 쓴다."""
+    with db.connect() as c:
+        rows = c.execute(
+            "SELECT started_at, dispensed_g, eaten_g, ratio, duration_min, note "
+            "FROM meal_intake WHERE dog_id=? ORDER BY started_at DESC LIMIT ?",
+            (dog_id, days * 3),
+        ).fetchall()
+        return {"meals": [dict(r) for r in reversed(rows)]}
+
+
+# ---------------------------------------------------------------------------
 # 체중 — 캐스케이드 외부 루프의 입력
 # ---------------------------------------------------------------------------
 
@@ -168,6 +228,107 @@ def weight_history(dog_id: str, days: int = 60) -> dict:
             (dog_id, days),
         ).fetchall()
         return {"weights": [dict(r) for r in reversed(rows)]}
+
+
+# ---------------------------------------------------------------------------
+# 최종 출력 — 급여 계획
+# ---------------------------------------------------------------------------
+
+@router.get("/dogs/{dog_id}/plan")
+def feeding_plan(dog_id: str) -> dict:
+    """
+    **이 시스템의 최종 출력.**
+
+    오늘 이 개에게 언제 무엇을 얼마나 줄 것인가.
+    하드웨어 앞에서 멈춘다 - 모터를 돌리는 건 밥통 담당이다.
+
+    안에 들어 있는 것:
+        끼니별 사료 그램 · 슬롯별 알 수 · 시각
+        왜 그렇게 나왔는지 (trace)
+        14일 시뮬레이션
+        보호자에게 물을 것
+    """
+    with db.connect() as c:
+        plan = db.latest_plan(c, dog_id)
+        if plan is None:
+            raise HTTPException(409, "아직 계획이 계산되지 않았습니다")
+        return plan
+
+
+@router.get("/dogs/{dog_id}/plan/text", response_class=PlainTextResponse)
+def feeding_plan_text(dog_id: str) -> str:
+    """같은 계획을 사람이 읽는 형태로. 시연·디버깅용."""
+    from core.plan import FeedingPlan
+
+    with db.connect() as c:
+        raw = db.latest_plan(c, dog_id)
+        if raw is None:
+            raise HTTPException(409, "아직 계획이 계산되지 않았습니다")
+        return FeedingPlan.model_validate(raw).render()
+
+
+@router.get("/dogs/{dog_id}/twin")
+def dog_twin(dog_id: str) -> dict:
+    """개체의 현재 상태 전부. 앱의 웰니스 화면이 읽는다."""
+    from core.inference import evaluate_axes
+    from core.models import DailySummary, DogProfile
+    from core.twin import build as build_twin
+
+    with db.connect() as c:
+        raw = db.get_dog(c, dog_id)
+        if raw is None:
+            raise HTTPException(404, "등록되지 않은 개체입니다")
+
+        profile = DogProfile.model_validate(raw)
+        days = [DailySummary.model_validate(d) for d in db.load_daily(c, dog_id)]
+        if not days:
+            raise HTTPException(409, "아직 수집된 데이터가 없습니다")
+
+        axes = evaluate_axes(profile, days)
+        return json.loads(build_twin(profile, days, axes).model_dump_json())
+
+
+# ---------------------------------------------------------------------------
+# 보호자 맥락
+# ---------------------------------------------------------------------------
+
+class AnswersIn(BaseModel):
+    answers: dict[str, str]
+
+
+@router.post("/dogs/{dog_id}/context")
+def save_context(dog_id: str, body: AnswersIn) -> dict:
+    """
+    보호자 답변을 저장한다.
+
+    **자연어는 여기서 끊긴다.** key/value 로 구조화된 값만 받고,
+    이후 Nutrition Engine 은 이 값만 본다.
+    """
+    from agent.wellness_agent import Context, interpret
+
+    with db.connect() as c:
+        if db.get_dog(c, dog_id) is None:
+            raise HTTPException(404, "등록되지 않은 개체입니다")
+        db.save_answers(c, dog_id, body.answers)
+
+        eff = interpret(Context(answers=body.answers))
+        return {
+            "saved": len(body.answers),
+            "defer_axes": [a.value for a in eff.defer_axes],
+            "block_all": eff.block_all,
+            "vet_referral": eff.vet_referral,
+            "notes": eff.notes,
+        }
+
+
+@router.get("/dogs/{dog_id}/questions")
+def questions(dog_id: str) -> dict:
+    """지금 보호자에게 물어볼 것. 계획에 이미 들어 있지만 따로도 뺀다."""
+    with db.connect() as c:
+        plan = db.latest_plan(c, dog_id)
+        if plan is None:
+            return {"questions": []}
+        return {"questions": plan.get("questions", [])}
 
 
 @router.get("/dogs/{dog_id}/dashboard")

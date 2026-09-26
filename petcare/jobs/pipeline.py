@@ -13,9 +13,11 @@ import json
 from datetime import date, datetime, timedelta
 
 from core.aggregate import build_daily_summary, wear_ratio_from_seconds
+from agent.wellness_agent import Context
+from core.intake import MealResult, daily_intake
+from core.plan import build as build_plan
 from core.weight import ScaleSession, daily_weight
 from core.inference import PrescriptionState
-from core.constants import CARTRIDGE_BY_ID
 from core.models import BehaviorEvent, BehaviorType, DailySummary, DogProfile
 from core.prescribe import prescribe
 from store import db
@@ -78,14 +80,34 @@ def rollup(conn, collar: str, day: date) -> DailySummary | None:
     # 활동계수가 잘못 교정되고 그 오차가 몇 달에 걸쳐 누적된다.
     weight = _accepted_weight(conn, dog_id, day)
 
+    # 실제 섭취량. 로드셀이 없으면 0으로 남고, 그러면 intake_ratio 는 1.0이 된다
+    # (준 게 없으면 다 먹은 것으로 친다 — models.py 참조).
+    offered, eaten = _daily_intake(conn, dog_id, day)
+
     summary = build_daily_summary(
         day, events, wear_ratio=wear,
         activity=activity,
         steps=steps if steps > 0 else None,
         weight_kg=weight,
+        food_offered_g=offered,
+        food_eaten_g=eaten,
     )
     db.save_daily(conn, dog_id, day, summary.model_dump_json())
     return summary
+
+
+def _daily_intake(conn, dog_id: str, day: date) -> tuple[int, int]:
+    """그날 실제로 준 양과 먹은 양."""
+    rows = db.meals_of_day(conn, dog_id, day)
+    meals = [
+        MealResult(
+            eaten_g=r["eaten_g"], offered_g=int(round(r["dispensed_g"])),
+            ratio=r["ratio"], duration_min=r["duration_min"],
+            skipped=r["ratio"] < 0.10, note=r["note"],
+        )
+        for r in rows
+    ]
+    return daily_intake(meals)
 
 
 def _accepted_weight(conn, dog_id: str, day: date) -> float | None:
@@ -143,7 +165,10 @@ def record_manual_weight(conn, dog_id: str, at: datetime, kg: float) -> dict:
 
 def recompute(conn, dog_id: str, today: date | None = None) -> dict | None:
     """
-    저장된 하루 요약들로 처방을 다시 계산한다.
+    저장된 하루 요약들로 **급여 계획**을 만든다.
+
+    처방만 내는 게 아니라 트윈 조립 · 14일 시뮬레이션 · 보호자 질문까지
+    한 번에 돈다. 이 결과가 시스템의 최종 출력이다.
 
     직전 처방이 남긴 상태를 이어받는다. 이게 없으면 히스테리시스와 슬루율
     제한이 매일 초기화되어 처방이 켜졌다 꺼졌다 발진한다.
@@ -160,76 +185,56 @@ def recompute(conn, dog_id: str, today: date | None = None) -> dict | None:
     prev = db.latest_state(conn, dog_id)
     state = PrescriptionState.model_validate(prev) if prev else PrescriptionState()
 
-    rx, next_state = prescribe(profile, days, state=state, today=today)
-
-    db.save_prescription(
-        conn, dog_id, today or days[-1].date,
-        ALGO_VERSION, rx.model_dump_json(), next_state.model_dump_json(),
+    answers, answered_at = db.load_context(conn, dog_id)
+    context = Context(
+        answers=answers,
+        updated_at=date.fromisoformat(answered_at[:10]) if answered_at else None,
     )
-    return json.loads(rx.model_dump_json())
+
+    plan, next_state = build_plan(
+        profile, days, state=state, context=context, today=today
+    )
+
+    payload = plan.model_dump_json()
+    db.save_plan_record(conn, dog_id, plan.date, payload)
+    db.save_prescription(
+        conn, dog_id, plan.date, ALGO_VERSION, payload, next_state.model_dump_json()
+    )
+    return json.loads(payload)
 
 
 # ---------------------------------------------------------------------------
 # 3. 사출 명령
 # ---------------------------------------------------------------------------
 
-def split_meals(rx: dict, meal_hours: list[int]) -> list[tuple[int, dict]]:
+def enqueue_dispense(conn, dog_id: str, day: date, meal_hours=None) -> int:
     """
-    처방을 끼니별로 쪼갠다.
+    급여 계획의 끼니를 그대로 사출 명령으로 적재한다.
 
-    영양제의 끼니 배치는 이미 알고리즘이 정해놨다(길항 성분 분리).
-    여기서는 그 결정을 따라 담기만 한다.
-    사료는 균등 분할하고 나머지 그램은 첫 끼니에 붙인다.
-    """
-    n = max(1, len(meal_hours))
-    grams = int(rx.get("food_grams", 0))
-    base = grams // n
-    per = [base] * n
-    per[0] += grams - base * n
+    끼니 배분은 core/plan.py 가 이미 했다. 여기서 다시 쪼개면 로직이 두 벌이 된다.
 
-    items = rx.get("items", [])
-    out: list[tuple[int, dict]] = []
-
-    for i, hour in enumerate(meal_hours):
-        if n == 1:
-            picked = items                      # 한 끼면 전부 같이 나간다
-        elif n == 3 and i == 1:
-            picked = []                         # 점심은 사료만
-        else:
-            slot = "morning" if i == 0 else "evening"
-            picked = [it for it in items if it.get("meal_slot") == slot]
-
-        out.append((hour, {
-            "food_g": per[i],
-            "pellets": [
-                {
-                    "cartridge_id": it["cartridge_id"],
-                    "slot": CARTRIDGE_BY_ID[it["cartridge_id"]].slot,
-                    "name": it["name"],
-                    "count": it["pellets"],
-                }
-                for it in picked
-            ],
-        }))
-    return out
-
-
-def enqueue_dispense(conn, dog_id: str, day: date, meal_hours: list[int]) -> int:
-    """
-    끼니별 사출 명령을 적재한다.
-
-    멱등키를 (개체, 날짜, 끼니 번호)로 만든다.
+    멱등키는 (개체, 날짜, 끼니 번호)다.
     잡이 두 번 돌아도 같은 끼니가 두 번 나가지 않는다 - 이중 급여는 사고다.
     """
-    rx = db.latest_prescription(conn, dog_id)
-    if rx is None:
+    plan = db.latest_plan(conn, dog_id)
+    if plan is None:
         return 0
 
     queued = 0
-    for i, (hour, payload) in enumerate(split_meals(rx, meal_hours)):
-        at = datetime.combine(day, datetime.min.time()) + timedelta(hours=hour)
+    for meal in plan.get("meals", []):
+        at = datetime.combine(day, datetime.min.time()) + timedelta(
+            hours=int(meal["hour"])
+        )
+        payload = {
+            "food_g": meal["food_g"],
+            "pellets": [
+                {"slot": p["slot"], "cartridge_id": p["cartridge_id"],
+                 "name": p["name"], "count": p["count"]}
+                for p in meal.get("pellets", [])
+            ],
+        }
         if db.queue_command(
-            conn, f"{dog_id}:{day}:{i}", dog_id,
+            conn, f"{dog_id}:{day}:{meal['index']}", dog_id,
             scheduled=at - COMMAND_LEAD,
             expires=at + COMMAND_TTL,
             payload=json.dumps(payload, ensure_ascii=False),
@@ -249,10 +254,8 @@ def run_daily(conn, collar: str, day: date, meal_hours: list[int] | None = None)
         return {"error": f"목줄 {collar} 에 연결된 개체가 없습니다"}
 
     summary = rollup(conn, collar, day)
-    rx = recompute(conn, dog_id, today=day)
-
-    hours = meal_hours or [8, 19]
-    queued = enqueue_dispense(conn, dog_id, day + timedelta(days=1), hours)
+    plan = recompute(conn, dog_id, today=day)
+    queued = enqueue_dispense(conn, dog_id, day + timedelta(days=1))
     expired = db.expire_stale(conn, datetime.now())
 
     return {
@@ -260,9 +263,13 @@ def run_daily(conn, collar: str, day: date, meal_hours: list[int] | None = None)
         "date": str(day),
         "wear_ratio": summary.wear_ratio if summary else None,
         "valid": summary.valid if summary else None,
-        "food_grams": rx.get("food_grams") if rx else None,
-        "items": len(rx.get("items", [])) if rx else 0,
-        "escalated": rx.get("escalated") if rx else None,
+        "food_grams": plan.get("total_food_g") if plan else None,
+        "pellets": sum(
+            len(m.get("pellets", [])) for m in plan.get("meals", [])
+        ) if plan else 0,
+        "escalated": plan.get("escalated") if plan else None,
+        "simulation": (plan.get("simulation") or {}).get("energy") if plan else None,
+        "questions": len(plan.get("questions", [])) if plan else 0,
         "commands_queued": queued,
         "commands_expired": expired,
     }

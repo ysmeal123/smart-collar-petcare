@@ -24,6 +24,7 @@ from core.telemetry import (
     resolved_status,
     to_behavior_events,
 )
+from core.intake import MealReading, evaluate
 from core.weight import ScaleSession
 from jobs import pipeline
 from mock.generator import generate
@@ -138,6 +139,9 @@ def seed(scenario: str, conn) -> dict:
     # 생성기가 만든 체중을 급식판 체중계가 잰 것처럼 밀어넣는다.
     # 개가 가만히 서 있지 않으므로 표본에 흔들림을 섞는다.
     weight_by_day = {d.date: d.weight_kg for d in ds.days}
+    intake_by_day = {
+        d.date: (d.food_offered_g, d.food_eaten_g) for d in ds.days
+    }
 
     total = 0
     for day in sorted(by_day):
@@ -157,19 +161,32 @@ def seed(scenario: str, conn) -> dict:
                 )],
             )
 
+        # 밥그릇 로드셀이 잰 식사. 끼니 수만큼 나눠 올린다.
+        offered, eaten = intake_by_day.get(day, (0, 0))
+        if offered > 0:
+            n = max(1, ds.profile.meals_per_day)
+            for i, hour in enumerate([8, 19][:n]):
+                at = datetime.combine(day, datetime.min.time()) + timedelta(hours=hour)
+                dispensed = offered / n
+                leftover = (offered - eaten) / n
+                reading = MealReading(
+                    started_at=at, ended_at=at + timedelta(minutes=12),
+                    dispensed_g=dispensed, leftover_g=leftover,
+                )
+                db.save_meal(conn, ds.profile.dog_id, at,
+                             at + timedelta(minutes=12), dispensed, leftover,
+                             evaluate(reading))
+
         pipeline.rollup(conn, collar, day)
 
     last = ds.days[-1].date
-    rx = pipeline.recompute(conn, ds.profile.dog_id, today=last)
+    plan = pipeline.recompute(conn, ds.profile.dog_id, today=last)
 
     # 사출 명령은 '실제 내일' 급여분으로 적재한다.
     # 생성기 데이터의 마지막 날짜를 쓰면 이미 만료된 명령이 되어
     # 밥통이 폴링해도 아무것도 받지 못한다 (만료 필터가 정상 동작하는 것이다).
     tomorrow = date.today() + timedelta(days=1)
-    queued = pipeline.enqueue_dispense(
-        conn, ds.profile.dog_id, tomorrow,
-        [8, 19] if ds.profile.meals_per_day == 2 else [8],
-    )
+    queued = pipeline.enqueue_dispense(conn, ds.profile.dog_id, tomorrow)
 
     return {
         "scenario": scenario,
@@ -177,13 +194,17 @@ def seed(scenario: str, conn) -> dict:
         "collar": collar,
         "events": total,
         "days": len(by_day),
-        "food_grams": rx["food_grams"] if rx else None,
-        "items": [f"{i['name']} {i['pellets']}알" for i in rx["items"]] if rx else [],
-        "escalated": rx["escalated"] if rx else None,
-        "fired": [a["axis"] for a in rx["axes"] if a["active"]] if rx else [],
+        "food_grams": plan["total_food_g"] if plan else None,
+        "items": [
+            f"{p['name']} {p['count']}알"
+            for m in plan["meals"] for p in m["pellets"]
+        ] if plan else [],
+        "escalated": plan["escalated"] if plan else None,
+        "fired": plan["attention"] if plan else [],
         "commands": queued,
-        "weights": sum(1 for d in ds.days if d.weight_kg is not None),
-        "k_final": rx["trace"] if False else None,
+        "sim": plan["simulation"]["energy"] if plan and plan.get("simulation") else "-",
+        "questions": len(plan["questions"]) if plan else 0,
+        "meals": [m["line"] for m in plan["meals"]] if plan else [],
     }
 
 
@@ -198,12 +219,20 @@ def main() -> None:
             print(f"  이벤트 {r['events']:,}건 / {r['days']}일 수집")
             print(f"  발화 축 {r['fired'] or '없음'}"
                   f"{'  🚨 긴급정지' if r['escalated'] else ''}")
-            print(f"  사료 {r['food_grams']}g   영양제 {r['items'] or '없음'}")
-            print(f"  사출 명령 {r['commands']}건 적재\n")
+            for line in r["meals"]:
+                print(f"    {line}")
+            print(f"  시뮬레이션 {r['sim']}  ·  질문 {r['questions']}개  ·  "
+                  f"사출 명령 {r['commands']}건")
+            print()
 
     print("서버를 띄워 확인하세요:")
     print("  uvicorn api.main:app --reload")
-    print("  http://localhost:8000/v1/dogs/dog-skin/dashboard")
+    print()
+    print("  최종 출력 (급여 계획)")
+    print("    http://localhost:8000/v1/dogs/dog_choco/plan")
+    print("    http://localhost:8000/v1/dogs/dog_choco/plan/text   ← 사람이 읽는 형태")
+    print("  개체 상태")
+    print("    http://localhost:8000/v1/dogs/dog_choco/twin")
 
 
 if __name__ == "__main__":
