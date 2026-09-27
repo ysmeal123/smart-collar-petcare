@@ -171,10 +171,18 @@ def test_사출_실패도_보고_대상이다(buf):
 # ---------------------------------------------------------------------------
 
 def test_계획_나이를_잰다(buf):
+    """
+    fetched_at 은 저장 시점의 실제 시각이다. 테스트가 가짜 날짜를 쓰면
+    실제 시계와 섞여 하루 중 언제 돌리느냐에 따라 결과가 달라진다.
+    그래서 기준 시각을 명시적으로 박아 두고 잰다.
+    """
     now = datetime(2026, 9, 27, 12, 0)
     assert buf.plan_age(now) is None          # 받은 적 없음
 
     buf.save_plan([cmd("c1", now)])
+    with buf._conn() as c:
+        c.execute("UPDATE plan SET fetched_at=?", (now.isoformat(),))
+
     age = buf.plan_age(now + timedelta(days=3))
     assert age is not None and age.days == 3
 

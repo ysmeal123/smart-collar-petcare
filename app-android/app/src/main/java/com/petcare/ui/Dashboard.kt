@@ -63,16 +63,23 @@ fun DashboardScreen(
     var loaded by remember { mutableStateOf<Loaded?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var reload by remember { mutableIntStateOf(0) }
+    var waking by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(scenario, dog, reload) {
         loaded = null
         error = null
+        // 무료 호스팅은 잠들어 있다가 첫 요청에 30~60초가 걸린다.
+        // 기다리는 동안 무슨 일이 일어나는지 알려줘야 한다.
+        waking = dog.serverBase.isNotBlank()
         runCatching {
-            repo.load(scenario, dog, dog.serverBase, dog.serverDogId)
+            repo.load(
+                scenario, dog, dog.serverBase, dog.serverDogId, dog.serverToken
+            )
         }
             .onSuccess { loaded = it }
             .onFailure { error = it.message ?: it.toString() }
+        waking = false
     }
 
     val data = loaded?.dashboard
@@ -85,10 +92,18 @@ fun DashboardScreen(
                 modifier = Modifier.align(Alignment.Center).padding(T.xl),
             )
 
-            data == null -> CircularProgressIndicator(
-                color = T.primary,
+            data == null -> Column(
                 modifier = Modifier.align(Alignment.Center),
-            )
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                CircularProgressIndicator(color = T.primary)
+                if (waking) {
+                    Spacer(Modifier.height(T.md))
+                    Text("서버를 깨우는 중입니다", style = T.caption)
+                    Spacer(Modifier.height(T.xxs))
+                    Text("무료 호스팅은 처음 한 번이 오래 걸립니다", style = T.finePrint)
+                }
+            }
 
             else -> Content(
                 data = data!!,
@@ -100,7 +115,9 @@ fun DashboardScreen(
                 onSaveProfile = onSaveProfile,
                 onAnswer = { answers ->
                     scope.launch {
-                        repo.answer(dog.serverBase, dog.serverDogId, answers)
+                        repo.answer(
+                            dog.serverBase, dog.serverDogId, answers, dog.serverToken
+                        )
                         reload++
                     }
                 },

@@ -123,6 +123,7 @@ data class MyDog(
     // 화면이 비지 않아야 하기 때문에 서버는 선택 사항으로 둔다.
     @SerialName("server_base") val serverBase: String = "",
     @SerialName("server_dog_id") val serverDogId: String = "",
+    @SerialName("server_token") val serverToken: String = "",
 ) {
     /** 휴식기 에너지 요구량. 모든 급여량 계산의 출발점이다. */
     val rer: Double get() = 70.0 * weightKg.pow(0.75)

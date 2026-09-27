@@ -208,7 +208,7 @@ def test_목줄을_반만_찬_날은_통계에서_빠진다(conn):
     # 앞 12시간은 목줄을 벗겨 뒀다고 본다
     conn.execute(
         "UPDATE status_samples SET worn_sec=0 "
-        "WHERE collar=? AND CAST(strftime('%H', ts) AS INTEGER) < 12",
+        "WHERE collar=? AND CAST(substr(ts, 12, 2) AS INTEGER) < 12",
         (COLLAR,),
     )
 

@@ -12,10 +12,11 @@ from datetime import date, datetime
 
 import json
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
+from api.auth import require_app, require_device
 from core.intake import MealReading, evaluate
 from core.weight import ScaleSession
 from core.telemetry import (
@@ -29,7 +30,7 @@ from store import db
 router = APIRouter(prefix="/v1", tags=["device"])
 
 
-@router.post("/ingest")
+@router.post("/ingest", dependencies=[Depends(require_device)])
 def ingest(batch: IngestBatch) -> dict:
     """
     게이트웨이(밥통)가 목줄 데이터를 올린다.
@@ -63,7 +64,7 @@ def ingest(batch: IngestBatch) -> dict:
         }
 
 
-@router.get("/feeder/{dog_id}/commands")
+@router.get("/feeder/{dog_id}/commands", dependencies=[Depends(require_device)])
 def commands(dog_id: str) -> dict:
     """
     밥통이 폴링한다.
@@ -75,7 +76,7 @@ def commands(dog_id: str) -> dict:
         return {"commands": db.pending_commands(c, dog_id, datetime.now())}
 
 
-@router.post("/feeder/commands/{cmd_id}/ack")
+@router.post("/feeder/commands/{cmd_id}/ack", dependencies=[Depends(require_device)])
 def ack(cmd_id: str, state: str = "done", result: str = "") -> dict:
     """
     실행 결과 보고.
@@ -90,7 +91,7 @@ def ack(cmd_id: str, state: str = "done", result: str = "") -> dict:
     return {"ok": True}
 
 
-@router.post("/jobs/daily")
+@router.post("/jobs/daily", dependencies=[Depends(require_device)])
 def run_daily_job(
     collar: str, day: str | None = None, meals: str = "8,19"
 ) -> dict:
@@ -124,7 +125,7 @@ class MealIn(BaseModel):
     leftover_g: float | None = Field(default=None, ge=0)
 
 
-@router.post("/feeder/{dog_id}/intake")
+@router.post("/feeder/{dog_id}/intake", dependencies=[Depends(require_device)])
 def feeder_intake(dog_id: str, meal: MealIn) -> dict:
     """
     처방한 양과 실제 먹은 양은 다르다.
@@ -150,7 +151,7 @@ def feeder_intake(dog_id: str, meal: MealIn) -> dict:
         }
 
 
-@router.get("/dogs/{dog_id}/intake")
+@router.get("/dogs/{dog_id}/intake", dependencies=[Depends(require_app)])
 def intake_history(dog_id: str, days: int = 14) -> dict:
     """식사 이력. 앱의 식욕 화면과 긴급정지 근거 표시에 쓴다."""
     with db.connect() as c:
@@ -182,7 +183,7 @@ class ManualWeight(BaseModel):
     measured_at: datetime | None = None
 
 
-@router.post("/feeder/{dog_id}/weight")
+@router.post("/feeder/{dog_id}/weight", dependencies=[Depends(require_device)])
 def feeder_weight(dog_id: str, batch: ScaleBatch) -> dict:
     """
     급식판 체중계가 올린다.
@@ -203,7 +204,7 @@ def feeder_weight(dog_id: str, batch: ScaleBatch) -> dict:
         return pipeline.record_scale_sessions(c, dog_id, day, sessions)
 
 
-@router.post("/dogs/{dog_id}/weight")
+@router.post("/dogs/{dog_id}/weight", dependencies=[Depends(require_app)])
 def manual_weight(dog_id: str, body: ManualWeight) -> dict:
     """
     보호자가 앱에서 직접 입력한다.
@@ -218,7 +219,7 @@ def manual_weight(dog_id: str, body: ManualWeight) -> dict:
         return pipeline.record_manual_weight(c, dog_id, at, body.kg)
 
 
-@router.get("/dogs/{dog_id}/weights")
+@router.get("/dogs/{dog_id}/weights", dependencies=[Depends(require_app)])
 def weight_history(dog_id: str, days: int = 60) -> dict:
     """체중 이력. 버린 측정도 이유와 함께 돌려준다."""
     with db.connect() as c:
@@ -234,7 +235,7 @@ def weight_history(dog_id: str, days: int = 60) -> dict:
 # 최종 출력 — 급여 계획
 # ---------------------------------------------------------------------------
 
-@router.get("/dogs/{dog_id}/plan")
+@router.get("/dogs/{dog_id}/plan", dependencies=[Depends(require_app)])
 def feeding_plan(dog_id: str) -> dict:
     """
     **이 시스템의 최종 출력.**
@@ -255,7 +256,7 @@ def feeding_plan(dog_id: str) -> dict:
         return plan
 
 
-@router.get("/dogs/{dog_id}/plan/text", response_class=PlainTextResponse)
+@router.get("/dogs/{dog_id}/plan/text", response_class=PlainTextResponse, dependencies=[Depends(require_app)])
 def feeding_plan_text(dog_id: str) -> str:
     """같은 계획을 사람이 읽는 형태로. 시연·디버깅용."""
     from core.plan import FeedingPlan
@@ -267,7 +268,7 @@ def feeding_plan_text(dog_id: str) -> str:
         return FeedingPlan.model_validate(raw).render()
 
 
-@router.get("/dogs/{dog_id}/twin")
+@router.get("/dogs/{dog_id}/twin", dependencies=[Depends(require_app)])
 def dog_twin(dog_id: str) -> dict:
     """개체의 현재 상태 전부. 앱의 웰니스 화면이 읽는다."""
     from core.inference import evaluate_axes
@@ -296,7 +297,7 @@ class AnswersIn(BaseModel):
     answers: dict[str, str]
 
 
-@router.post("/dogs/{dog_id}/context")
+@router.post("/dogs/{dog_id}/context", dependencies=[Depends(require_app)])
 def save_context(dog_id: str, body: AnswersIn) -> dict:
     """
     보호자 답변을 저장한다.
@@ -321,7 +322,7 @@ def save_context(dog_id: str, body: AnswersIn) -> dict:
         }
 
 
-@router.get("/dogs/{dog_id}/questions")
+@router.get("/dogs/{dog_id}/questions", dependencies=[Depends(require_app)])
 def questions(dog_id: str) -> dict:
     """지금 보호자에게 물어볼 것. 계획에 이미 들어 있지만 따로도 뺀다."""
     with db.connect() as c:
@@ -331,7 +332,7 @@ def questions(dog_id: str) -> dict:
         return {"questions": plan.get("questions", [])}
 
 
-@router.get("/dogs/{dog_id}/dashboard")
+@router.get("/dogs/{dog_id}/dashboard", dependencies=[Depends(require_app)])
 def dashboard(dog_id: str, days: int = 7) -> dict:
     """
     앱이 읽는 대시보드.
@@ -402,7 +403,7 @@ def _trend(recent: list[dict], window: int = 7) -> dict:
     return out
 
 
-@router.get("/status")
+@router.get("/status", dependencies=[Depends(require_app)])
 def device_status() -> dict:
     """등록된 목줄들의 마지막 통신 시각. 앱 기기 화면용."""
     with db.connect() as c:

@@ -24,7 +24,12 @@ object Net {
      */
     const val DEFAULT_BASE = "http://10.0.2.2:8000"
 
-    private const val TIMEOUT_MS = 4000
+    /**
+     * 무료 호스팅은 15분 놀면 잠들고, 깨는 데 30~60초가 걸린다.
+     * 4초 만에 포기하면 데모 중에 늘 데모 데이터로 내려간다.
+     */
+    private const val CONNECT_MS = 5_000
+    private const val READ_MS = 70_000
 
     private val json = Json {
         ignoreUnknownKeys = true
@@ -37,12 +42,16 @@ object Net {
         url: String,
         method: String = "GET",
         body: String? = null,
+        token: String = "",
     ): String = withContext(Dispatchers.IO) {
         val conn = (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = method
-            connectTimeout = TIMEOUT_MS
-            readTimeout = TIMEOUT_MS
+            connectTimeout = CONNECT_MS
+            readTimeout = READ_MS
             setRequestProperty("Accept", "application/json")
+            if (token.isNotBlank()) {
+                setRequestProperty("Authorization", "Bearer $token")
+            }
             if (body != null) {
                 doOutput = true
                 setRequestProperty("Content-Type", "application/json")
@@ -70,13 +79,15 @@ object Net {
         }
     }
 
-    suspend fun dashboard(base: String, dogId: String): Dashboard {
-        val raw = request("$base/v1/dogs/$dogId/dashboard")
+    suspend fun dashboard(base: String, dogId: String, token: String = ""): Dashboard {
+        val raw = request("$base/v1/dogs/$dogId/dashboard", token = token)
         return json.decodeFromString(raw)
     }
 
     /** 보호자 답변을 올린다. 반환은 서버가 알려주는 조정 결과. */
-    suspend fun answer(base: String, dogId: String, answers: Map<String, String>): String {
+    suspend fun answer(
+        base: String, dogId: String, answers: Map<String, String>, token: String = "",
+    ): String {
         val payload = buildString {
             append("""{"answers":{""")
             append(answers.entries.joinToString(",") { (k, v) ->
@@ -84,13 +95,20 @@ object Net {
             })
             append("}}")
         }
-        return request("$base/v1/dogs/$dogId/context", "POST", payload)
+        return request("$base/v1/dogs/$dogId/context", "POST", payload, token)
     }
 
-    suspend fun putWeight(base: String, dogId: String, kg: Double): String =
-        request("$base/v1/dogs/$dogId/weight", "POST", """{"kg":$kg}""")
+    suspend fun putWeight(
+        base: String, dogId: String, kg: Double, token: String = "",
+    ): String = request("$base/v1/dogs/$dogId/weight", "POST", """{"kg":$kg}""", token)
 
-    suspend fun reachable(base: String): Boolean = try {
+    /**
+     * 서버를 깨운다.
+     *
+     * 잠들어 있던 인스턴스는 첫 요청이 오래 걸린다. 화면을 띄우기 전에
+     * 한 번 두드려 두면 그 뒤 요청은 정상 속도로 돌아온다.
+     */
+    suspend fun wake(base: String): Boolean = try {
         request("$base/health")
         true
     } catch (_: Exception) {

@@ -19,7 +19,10 @@ from core.constants import CARTRIDGES, FOODS
 from core.inference import PrescriptionState
 from core.models import DailySummary, DogProfile, Prescription
 from core.prescribe import prescribe
+from api.auth import status as auth_status
 from api.ingest import router as device_router
+from store import db
+from store.dialect import backend
 
 app = FastAPI(
     title="Pet Nutrition API",
@@ -29,6 +32,31 @@ app = FastAPI(
 
 # 기기(목줄·밥통) 및 실데이터 엔드포인트
 app.include_router(device_router)
+
+
+@app.on_event("startup")
+def _startup() -> None:
+    """
+    스키마를 확인하고 설정 상태를 로그로 남긴다.
+
+    배포 환경에서 인증이 꺼진 채로 떠 있는 것을 눈치채지 못하면
+    공개 인터넷에 무방비로 노출된다. 시작할 때 크게 알린다.
+    """
+    db.init()
+
+    auth = auth_status()
+    print(f"[pebble] 저장소: {backend()}", flush=True)
+    if auth["enabled"]:
+        print(
+            f"[pebble] 인증: 기기={auth['device_token']} 앱={auth['app_token']}",
+            flush=True,
+        )
+    else:
+        print(
+            "[pebble] ⚠ 인증이 꺼져 있습니다. "
+            "공개 배포라면 PEBBLE_DEVICE_TOKEN / PEBBLE_APP_TOKEN 을 설정하세요.",
+            flush=True,
+        )
 
 
 class PrescribeRequest(BaseModel):

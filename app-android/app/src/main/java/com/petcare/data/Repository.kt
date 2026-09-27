@@ -19,6 +19,9 @@ import kotlinx.serialization.json.Json
 
 enum class Origin { LIVE, DEMO }
 
+/** 서버를 깨우는 중인지. 무료 호스팅은 첫 요청이 30~60초 걸린다. */
+enum class Phase { WAKING, DONE }
+
 data class Loaded(
     val dashboard: Dashboard,
     val origin: Origin,
@@ -43,12 +46,13 @@ class Repository(private val context: Context) {
         dog: MyDog? = null,
         base: String? = null,
         dogId: String? = null,
+        token: String = "",
     ): Loaded {
         val server = base?.takeIf { it.isNotBlank() }
         val id = dogId?.takeIf { it.isNotBlank() }
 
         if (server != null && id != null) {
-            runCatching { Net.dashboard(server, id) }
+            runCatching { Net.dashboard(server, id, token) }
                 .onSuccess { board ->
                     return Loaded(
                         dashboard = if (dog == null) board else board.withSafetyFilter(dog),
@@ -80,11 +84,11 @@ class Repository(private val context: Context) {
 
     /** 보호자 답변 전송. 서버가 없으면 조용히 실패한다 (데모에서는 화면만 갱신). */
     suspend fun answer(
-        base: String?, dogId: String?, answers: Map<String, String>,
+        base: String?, dogId: String?, answers: Map<String, String>, token: String = "",
     ): Boolean {
         val server = base?.takeIf { it.isNotBlank() } ?: return false
         val id = dogId?.takeIf { it.isNotBlank() } ?: return false
-        return runCatching { Net.answer(server, id, answers) }.isSuccess
+        return runCatching { Net.answer(server, id, answers, token) }.isSuccess
     }
 
     suspend fun sendWeight(base: String?, dogId: String?, kg: Double): Boolean {

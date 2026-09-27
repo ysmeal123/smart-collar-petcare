@@ -21,13 +21,12 @@ SQLite를 쓴다. 팀원이 클론해서 바로 돌릴 수 있는 게 지금 단
 from __future__ import annotations
 
 import json
-import sqlite3
-from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
-from typing import Iterator
 
-DB_PATH = Path(__file__).resolve().parent.parent / "petcare.db"
+from store.dialect import DEFAULT_SQLITE, Conn, backend, connect, is_postgres
+
+DB_PATH = DEFAULT_SQLITE
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS dogs (
@@ -161,21 +160,8 @@ CREATE INDEX IF NOT EXISTS idx_cmd ON dispense_commands(dog_id, state);
 """
 
 
-@contextmanager
-def connect(path: Path | str = DB_PATH) -> Iterator[sqlite3.Connection]:
-    conn = sqlite3.connect(str(path))
-    conn.row_factory = sqlite3.Row
-    # 게이트웨이 여러 대가 동시에 올릴 수 있다
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    try:
-        yield conn
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def init(path: Path | str = DB_PATH) -> None:
+def init(path: Path | str | None = None) -> None:
+    """스키마를 만든다. 몇 번을 돌려도 안전하다."""
     with connect(path) as c:
         c.executescript(SCHEMA)
 
@@ -184,7 +170,7 @@ def init(path: Path | str = DB_PATH) -> None:
 # 개체 · 목줄
 # ---------------------------------------------------------------------------
 
-def upsert_dog(c: sqlite3.Connection, dog_id: str, profile_json: str) -> None:
+def upsert_dog(c: Conn, dog_id: str, profile_json: str) -> None:
     c.execute(
         "INSERT INTO dogs(dog_id, profile, created_at) VALUES(?,?,?) "
         "ON CONFLICT(dog_id) DO UPDATE SET profile=excluded.profile",
@@ -192,12 +178,12 @@ def upsert_dog(c: sqlite3.Connection, dog_id: str, profile_json: str) -> None:
     )
 
 
-def get_dog(c: sqlite3.Connection, dog_id: str) -> dict | None:
+def get_dog(c: Conn, dog_id: str) -> dict | None:
     row = c.execute("SELECT profile FROM dogs WHERE dog_id=?", (dog_id,)).fetchone()
     return json.loads(row["profile"]) if row else None
 
 
-def bind_collar(c: sqlite3.Connection, serial: str, dog_id: str) -> None:
+def bind_collar(c: Conn, serial: str, dog_id: str) -> None:
     c.execute(
         "INSERT INTO collars(serial, dog_id) VALUES(?,?) "
         "ON CONFLICT(serial) DO UPDATE SET dog_id=excluded.dog_id",
@@ -205,13 +191,13 @@ def bind_collar(c: sqlite3.Connection, serial: str, dog_id: str) -> None:
     )
 
 
-def dog_of_collar(c: sqlite3.Connection, serial: str) -> str | None:
+def dog_of_collar(c: Conn, serial: str) -> str | None:
     row = c.execute("SELECT dog_id FROM collars WHERE serial=?", (serial,)).fetchone()
     return row["dog_id"] if row else None
 
 
 def touch_collar(
-    c: sqlite3.Connection, serial: str, fw: str, battery: int | None
+    c: Conn, serial: str, fw: str, battery: int | None
 ) -> None:
     c.execute(
         "UPDATE collars SET fw_version=?, battery=COALESCE(?, battery), last_seen=? "
@@ -224,13 +210,12 @@ def touch_collar(
 # 수집
 # ---------------------------------------------------------------------------
 
-def insert_events(c: sqlite3.Connection, collar: str, boot_id: int, rows: list) -> int:
+def insert_events(c: Conn, collar: str, boot_id: int, rows: list) -> int:
     """
     중복은 DB가 막는다. 애플리케이션에서 조회해 거르는 것보다 확실하다.
     반환: 실제로 새로 들어간 개수
     """
-    before = c.total_changes
-    c.executemany(
+    cur = c.executemany(
         "INSERT OR IGNORE INTO events(collar, boot_id, seq, ts, type, conf, dur_s) "
         "VALUES(?,?,?,?,?,?,?)",
         [
@@ -238,18 +223,17 @@ def insert_events(c: sqlite3.Connection, collar: str, boot_id: int, rows: list) 
             for e, ts in rows
         ],
     )
-    return c.total_changes - before
+    return max(0, cur.rowcount)
 
 
-def insert_status(c: sqlite3.Connection, collar: str, boot_id: int, rows: list) -> int:
+def insert_status(c: Conn, collar: str, boot_id: int, rows: list) -> int:
     """
     상태 표본을 그대로 넣는다. 중복은 기본키가 막는다.
 
     rows: [(CollarStatus, 실시각), ...]
     반환: 실제로 새로 들어간 개수
     """
-    before = c.total_changes
-    c.executemany(
+    cur = c.executemany(
         "INSERT OR IGNORE INTO status_samples"
         "(collar, boot_id, t_ms, ts, worn_sec, steps, "
         " walk_sec, run_sec, vigorous_sec, rest_sec) "
@@ -260,10 +244,10 @@ def insert_status(c: sqlite3.Connection, collar: str, boot_id: int, rows: list) 
             for st, ts in rows
         ],
     )
-    return c.total_changes - before
+    return max(0, cur.rowcount)
 
 
-def events_of_day(c: sqlite3.Connection, collar: str, day: date) -> list[sqlite3.Row]:
+def events_of_day(c: Conn, collar: str, day: date) -> list:
     return c.execute(
         "SELECT ts, type, conf, dur_s FROM events "
         "WHERE collar=? AND ts >= ? AND ts < ? ORDER BY ts",
@@ -271,7 +255,7 @@ def events_of_day(c: sqlite3.Connection, collar: str, day: date) -> list[sqlite3
     ).fetchall()
 
 
-def status_of_day(c: sqlite3.Connection, collar: str, day: date) -> list[sqlite3.Row]:
+def status_of_day(c: Conn, collar: str, day: date) -> list:
     """
     하루치 표본을 시간대별로 접어서 돌려준다.
 
@@ -279,7 +263,9 @@ def status_of_day(c: sqlite3.Connection, collar: str, day: date) -> list[sqlite3
     기기가 꺼져 있던 시간이 '미착용'으로 계산되지 않는다.
     """
     return c.execute(
-        "SELECT CAST(strftime('%H', ts) AS INTEGER) AS hour, "
+        # strftime 은 SQLite 전용이다. substr 은 양쪽에 있고
+        # ISO 문자열의 12~13번째 글자가 곧 '시'다.
+        "SELECT CAST(substr(ts, 12, 2) AS INTEGER) AS hour, "
         "       SUM(worn_sec) AS worn_sec, COUNT(*) * 60 AS covered_sec, "
         "       SUM(steps) AS steps, SUM(walk_sec) AS walk_sec, "
         "       SUM(run_sec) AS run_sec, SUM(vigorous_sec) AS vigorous_sec "
@@ -294,7 +280,7 @@ def status_of_day(c: sqlite3.Connection, collar: str, day: date) -> list[sqlite3
 # 섭취량
 # ---------------------------------------------------------------------------
 
-def save_meal(c: sqlite3.Connection, dog_id: str, started_at: datetime,
+def save_meal(c: Conn, dog_id: str, started_at: datetime,
               ended_at: datetime | None, dispensed_g: float,
               leftover_g: float | None, result) -> None:
     """같은 식사를 다시 올리면 덮어쓴다. 식사 종료 보고가 나중에 오기 때문이다."""
@@ -313,7 +299,7 @@ def save_meal(c: sqlite3.Connection, dog_id: str, started_at: datetime,
     )
 
 
-def meals_of_day(c: sqlite3.Connection, dog_id: str, day: date) -> list[sqlite3.Row]:
+def meals_of_day(c: Conn, dog_id: str, day: date) -> list:
     return c.execute(
         "SELECT started_at, ended_at, dispensed_g, leftover_g, eaten_g, "
         "       ratio, duration_min, note FROM meal_intake "
@@ -327,7 +313,7 @@ def meals_of_day(c: sqlite3.Connection, dog_id: str, day: date) -> list[sqlite3.
 # ---------------------------------------------------------------------------
 
 def save_weight(
-    c: sqlite3.Connection, dog_id: str, measured_at: datetime,
+    c: Conn, dog_id: str, measured_at: datetime,
     kg: float, source: str, accepted: bool, reason: str = "",
 ) -> None:
     """
@@ -345,7 +331,7 @@ def save_weight(
     )
 
 
-def weights_of_day(c: sqlite3.Connection, dog_id: str, day: date) -> list[sqlite3.Row]:
+def weights_of_day(c: Conn, dog_id: str, day: date) -> list:
     return c.execute(
         "SELECT measured_at, kg, source, accepted FROM weights "
         "WHERE dog_id=? AND measured_at >= ? AND measured_at < ? "
@@ -355,7 +341,7 @@ def weights_of_day(c: sqlite3.Connection, dog_id: str, day: date) -> list[sqlite
 
 
 def last_accepted_weight(
-    c: sqlite3.Connection, dog_id: str, before: date
+    c: Conn, dog_id: str, before: date
 ) -> float | None:
     """직전에 채택된 체중. 타당성 검사의 기준점이다."""
     row = c.execute(
@@ -370,7 +356,7 @@ def last_accepted_weight(
 # 집계 · 처방
 # ---------------------------------------------------------------------------
 
-def save_daily(c: sqlite3.Connection, dog_id: str, day: date, payload: str) -> None:
+def save_daily(c: Conn, dog_id: str, day: date, payload: str) -> None:
     c.execute(
         "INSERT INTO daily_metrics(dog_id, date, payload) VALUES(?,?,?) "
         "ON CONFLICT(dog_id, date) DO UPDATE SET payload=excluded.payload",
@@ -378,7 +364,7 @@ def save_daily(c: sqlite3.Connection, dog_id: str, day: date, payload: str) -> N
     )
 
 
-def load_daily(c: sqlite3.Connection, dog_id: str, limit: int = 60) -> list[dict]:
+def load_daily(c: Conn, dog_id: str, limit: int = 60) -> list[dict]:
     """오래된 것부터 돌려준다. 알고리즘이 시계열 순서를 전제한다."""
     rows = c.execute(
         "SELECT payload FROM daily_metrics WHERE dog_id=? ORDER BY date DESC LIMIT ?",
@@ -388,7 +374,7 @@ def load_daily(c: sqlite3.Connection, dog_id: str, limit: int = 60) -> list[dict
 
 
 def save_prescription(
-    c: sqlite3.Connection, dog_id: str, day: date,
+    c: Conn, dog_id: str, day: date,
     algo_version: str, payload: str, state: str = "{}",
 ) -> None:
     c.execute(
@@ -399,7 +385,7 @@ def save_prescription(
     )
 
 
-def latest_prescription(c: sqlite3.Connection, dog_id: str) -> dict | None:
+def latest_prescription(c: Conn, dog_id: str) -> dict | None:
     row = c.execute(
         "SELECT payload FROM prescriptions WHERE dog_id=? ORDER BY id DESC LIMIT 1",
         (dog_id,),
@@ -407,7 +393,7 @@ def latest_prescription(c: sqlite3.Connection, dog_id: str) -> dict | None:
     return json.loads(row["payload"]) if row else None
 
 
-def latest_state(c: sqlite3.Connection, dog_id: str) -> dict:
+def latest_state(c: Conn, dog_id: str) -> dict:
     """
     직전 처방이 남긴 상태. 히스테리시스와 슬루율 제한이 이걸 이어받는다.
     없으면 빈 상태로 시작한다 - 첫날이라는 뜻이다.
@@ -423,7 +409,7 @@ def latest_state(c: sqlite3.Connection, dog_id: str) -> dict:
 # 보호자 맥락 · 급여 계획
 # ---------------------------------------------------------------------------
 
-def save_answers(c: sqlite3.Connection, dog_id: str, answers: dict[str, str]) -> None:
+def save_answers(c: Conn, dog_id: str, answers: dict[str, str]) -> None:
     now = datetime.now().isoformat(timespec="seconds")
     c.executemany(
         "INSERT INTO guardian_context(dog_id, key, value, answered_at) "
@@ -433,7 +419,7 @@ def save_answers(c: sqlite3.Connection, dog_id: str, answers: dict[str, str]) ->
     )
 
 
-def load_context(c: sqlite3.Connection, dog_id: str) -> tuple[dict[str, str], str | None]:
+def load_context(c: Conn, dog_id: str) -> tuple[dict[str, str], str | None]:
     rows = c.execute(
         "SELECT key, value, answered_at FROM guardian_context WHERE dog_id=?",
         (dog_id,),
@@ -446,14 +432,14 @@ def load_context(c: sqlite3.Connection, dog_id: str) -> tuple[dict[str, str], st
     )
 
 
-def save_plan_record(c: sqlite3.Connection, dog_id: str, day: date, payload: str) -> None:
+def save_plan_record(c: Conn, dog_id: str, day: date, payload: str) -> None:
     c.execute(
         "INSERT INTO plans(dog_id, date, payload, created_at) VALUES(?,?,?,?)",
         (dog_id, str(day), payload, datetime.now().isoformat(timespec="seconds")),
     )
 
 
-def latest_plan(c: sqlite3.Connection, dog_id: str) -> dict | None:
+def latest_plan(c: Conn, dog_id: str) -> dict | None:
     row = c.execute(
         "SELECT payload FROM plans WHERE dog_id=? ORDER BY id DESC LIMIT 1",
         (dog_id,),
@@ -466,7 +452,7 @@ def latest_plan(c: sqlite3.Connection, dog_id: str) -> dict | None:
 # ---------------------------------------------------------------------------
 
 def queue_command(
-    c: sqlite3.Connection, cmd_id: str, dog_id: str,
+    c: Conn, cmd_id: str, dog_id: str,
     scheduled: datetime, expires: datetime, payload: str,
 ) -> bool:
     """
@@ -481,7 +467,7 @@ def queue_command(
     return cur.rowcount > 0
 
 
-def pending_commands(c: sqlite3.Connection, dog_id: str, now: datetime) -> list[dict]:
+def pending_commands(c: Conn, dog_id: str, now: datetime) -> list[dict]:
     """
     만료된 명령은 주지 않는다.
     아침 급여 명령이 저녁에 실행되면 안 된다.
@@ -497,14 +483,14 @@ def pending_commands(c: sqlite3.Connection, dog_id: str, now: datetime) -> list[
     ]
 
 
-def ack_command(c: sqlite3.Connection, cmd_id: str, state: str, result: str) -> None:
+def ack_command(c: Conn, cmd_id: str, state: str, result: str) -> None:
     c.execute(
         "UPDATE dispense_commands SET state=?, result=? WHERE id=?",
         (state, result, cmd_id),
     )
 
 
-def expire_stale(c: sqlite3.Connection, now: datetime) -> int:
+def expire_stale(c: Conn, now: datetime) -> int:
     """
     실행되지 않은 채 만료된 명령을 정리한다.
 

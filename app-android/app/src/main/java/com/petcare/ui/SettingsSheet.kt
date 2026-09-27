@@ -37,6 +37,7 @@ fun SettingsSheet(
     val state = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var base by remember { mutableStateOf(dog.serverBase) }
     var dogId by remember { mutableStateOf(dog.serverDogId) }
+    var token by remember { mutableStateOf(dog.serverToken) }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -84,6 +85,12 @@ fun SettingsSheet(
                     onValueChange = { dogId = it },
                     placeholder = "개체 ID (예: dog_choco)",
                 )
+                Spacer(Modifier.height(T.xs))
+                PillInput(
+                    value = token,
+                    onValueChange = { token = it },
+                    placeholder = "앱 토큰 (배포 서버에 필요)",
+                )
 
                 Spacer(Modifier.height(T.sm))
                 Text(
@@ -97,7 +104,7 @@ fun SettingsSheet(
                     GhostPill(
                         label = "데모로 되돌리기",
                         modifier = Modifier.weight(1f),
-                        onClick = { base = ""; dogId = "" },
+                        onClick = { base = ""; dogId = ""; token = "" },
                     )
                     PrimaryPill(
                         label = "저장",
@@ -107,6 +114,7 @@ fun SettingsSheet(
                                 dog.copy(
                                     serverBase = base.trim(),
                                     serverDogId = dogId.trim(),
+                                    serverToken = token.trim(),
                                 )
                             )
                         },
