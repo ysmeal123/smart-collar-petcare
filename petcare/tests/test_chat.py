@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 
 import pytest
@@ -298,3 +299,145 @@ def test_해석_결과는_사람_말로_보여준다():
     text = chat_mod.understood(note).text
     assert "env_exposure" not in text
     assert "풀밭" in text
+
+
+# ---------------------------------------------------------------------------
+# LLM 추출기
+#
+# 키 없이도 검증할 수 있는 것만 본다 - 방어층과 계약.
+# 실제 호출은 키가 있어야 하므로 여기서 하지 않는다.
+# ---------------------------------------------------------------------------
+
+def test_LLM_이_모르는_key_를_만들_수_없다():
+    """
+    ALLOWED 가 QUESTIONS 와 어긋나면, LLM 이 내놓은 값이 저장은 되는데
+    interpret() 가 몰라서 아무 일도 안 일어난다. 찾기 어려운 실패다.
+    """
+    from agent.llm import ALLOWED, MEANING
+
+    known = {q.key for qs in QUESTIONS.values() for q in qs}
+    assert set(ALLOWED) <= known, f"질문 목록에 없는 key: {set(ALLOWED) - known}"
+    assert set(MEANING) == set(ALLOWED), "설명과 허용 목록이 어긋난다"
+
+
+@pytest.mark.parametrize("raw, expect", [
+    ({"vomit": "yes"}, {"vomit": "yes"}),
+    ({"limping": "네"}, {"limping": "yes"}),
+    ({"skin_visible": "보여요"}, {"skin_visible": "보여요"}),
+    # --- 아래는 전부 버려져야 한다 ---
+    ({"unknown_key": "yes"}, {}),
+    ({"skin_visible": "아무거나"}, {}),
+    ({"vomit": 123}, {}),
+    ({"vomit": {"nested": 1}}, {}),
+    ("문자열", {}),
+    (None, {}),
+    ([], {}),
+])
+def test_LLM_응답을_걸러낸다(raw, expect):
+    """
+    **모르는 것은 전부 버린다.**
+
+    환각이든 프롬프트 인젝션이든 여기서 멈춘다. LLM 이 무엇을 내놓든
+    ALLOWED 를 통과한 것만 시스템 안으로 들어온다.
+    """
+    from agent.llm import sanitize
+    assert sanitize(raw) == expect
+
+
+def test_프롬프트가_진단을_시키지_않는다():
+    """
+    LLM 에게 판단을 시키면 그 말이 화면에 뜨고, 그때부터 이 서비스는
+    진단을 하는 서비스가 된다. 추출만 시킨다.
+    """
+    from agent.llm import build_prompt
+
+    p = build_prompt("털이 빠져요")
+    assert "진단하지 말고" in p
+    assert "조언하지 말고" in p
+    assert "없는 key 는 절대 만들지 마라" in p
+    # 부정 처리 지침이 들어 있어야 한다 - 규칙 기반이 제일 많이 틀린 곳이다
+    assert "안 했어요" in p
+
+
+def test_키가_없으면_규칙으로_떨어진다(monkeypatch):
+    """외부 API 하나가 죽었다고 화면이 멈추면 안 된다."""
+    monkeypatch.delenv("PEBBLE_LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("PEBBLE_LLM_KEY", raising=False)
+
+    from agent import llm
+    assert llm.enabled() is False
+    assert llm.extract_llm("털이 빠져요") is None
+
+    e = extract("털이 빠져요")
+    assert e.engine == "rules"
+    assert "skin_visible" in e.answers
+
+
+def test_LLM_이_실패해도_규칙이_받는다(monkeypatch):
+    monkeypatch.setenv("PEBBLE_LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("PEBBLE_LLM_KEY", "dummy")
+
+    import agent.llm as llm_mod
+    monkeypatch.setattr(llm_mod, "_call_gemini",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("network")))
+
+    e = extract("토했어요")
+    assert e.engine == "rules"
+    assert e.answers == {"vomit": "yes"}
+
+
+def test_LLM_이_켜지면_그_결과를_쓴다(monkeypatch):
+    monkeypatch.setenv("PEBBLE_LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("PEBBLE_LLM_KEY", "dummy")
+
+    import agent.llm as llm_mod
+    # 규칙 사전이 절대 못 잡는 문장. LLM 이 붙으면 이런 게 잡힌다.
+    monkeypatch.setattr(
+        llm_mod, "_call_gemini",
+        lambda *a, **k: '{"eating_less": "yes", "noise": "yes"}',
+    )
+
+    e = extract("어제부터 통 입에 안 대고, 윗집이 밤새 쿵쿵거렸어요")
+    assert e.engine == "llm"
+    assert e.answers == {"eating_less": "yes", "noise": "yes"}
+
+
+def test_코드펜스가_붙어도_읽는다(monkeypatch):
+    """responseMimeType 를 줘도 모델이 펜스를 붙이는 경우가 있다."""
+    monkeypatch.setenv("PEBBLE_LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("PEBBLE_LLM_KEY", "dummy")
+
+    import agent.llm as llm_mod
+    monkeypatch.setattr(
+        llm_mod, "_call_gemini",
+        lambda *a, **k: '```json\n{"vomit": "yes"}\n```',
+    )
+    assert extract("토했어요").answers == {"vomit": "yes"}
+
+
+def test_LLM_로도_용량을_올릴_수_없다(skin_ds, monkeypatch):
+    """
+    **이 보장이 LLM 을 여기 놓을 수 있는 이유다.**
+
+    추출이 어떻게 틀리든 최악의 결과가 '영양제를 안 준다' 여야 한다.
+    과다 급여가 아니다.
+    """
+    monkeypatch.setenv("PEBBLE_LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("PEBBLE_LLM_KEY", "dummy")
+
+    base = _pellets(build(skin_ds.profile, skin_ds.days, context=Context())[0])
+
+    import agent.llm as llm_mod
+    from agent.llm import ALLOWED
+
+    # LLM 이 모든 항목에 '예'를 뱉는 최악의 경우
+    everything = {k: v[0] for k, v in ALLOWED.items()}
+    monkeypatch.setattr(
+        llm_mod, "_call_gemini", lambda *a, **k: json.dumps(everything),
+    )
+
+    ex = extract("아무 말이나")
+    plan, _, _ = build(
+        skin_ds.profile, skin_ds.days, context=Context(answers=ex.answers)
+    )
+    assert _pellets(plan) <= base

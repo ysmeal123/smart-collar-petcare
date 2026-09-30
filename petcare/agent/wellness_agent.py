@@ -166,6 +166,11 @@ QUESTIONS: dict[HealthAxis, list[Question]] = {
             why="간식으로 배가 차면 사료를 남깁니다. 식욕 저하가 아닙니다",
         ),
         Question(
+            key="eating_less", axis=HealthAxis.APPETITE,
+            text="요즘 밥을 남기거나 잘 안 먹나요?",
+            why="밥을 안 먹는 상태에서 영양제를 바꾸면 원인이 더 흐려집니다",
+        ),
+        Question(
             key="vomit", axis=HealthAxis.APPETITE,
             text="구토나 설사가 있었나요?",
             why="소화기 증상이 있으면 영양제를 멈추고 진료를 권합니다",
@@ -266,6 +271,13 @@ def interpret(context: Context) -> ContextEffect:
         eff.defer_axes.append(HealthAxis.MOBILITY)
         eff.vet_referral = True
         eff.notes.append("파행이 보인다고 하셨습니다 — 진료를 먼저 권합니다")
+
+    # 밥을 안 먹는 개에게 영양제를 늘리는 건 위험하다.
+    # 원인을 모르는 채 조성을 바꾸면 상태를 더 흐린다 - 식욕축이
+    # 차단 전용인 것과 같은 이유다.
+    if context.said_yes("eating_less"):
+        eff.block_all = True
+        eff.notes.append("밥을 잘 안 먹는다고 하셨습니다 — 원인이 확인될 때까지 영양제를 멈춥니다")
 
     if context.said_yes("vomit"):
         eff.block_all = True

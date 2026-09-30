@@ -21,6 +21,7 @@ from datetime import date, datetime
 
 from pydantic import BaseModel, Field
 
+from agent.extract import TOPICS
 from agent.wellness_agent import QUESTIONS, Context, ask, brief
 from core.models import HealthAxis
 from core.twin import DogTwin
@@ -154,20 +155,27 @@ def _pretty(value: str) -> str:
     return {"yes": "네", "no": "아니요"}.get(value, value)
 
 
-def understood(note: Note) -> ChatTurn:
+def understood(note: Note, has_pending: bool = True) -> ChatTurn:
     """
     "이렇게 알아들었습니다."
 
     **못 알아들은 것도 말한다.** 조용히 넘기면 보호자는 전달했다고 믿는데
     아무 일도 일어나지 않는다. 침묵보다 나쁘다.
+
+    못 알아들었는데 이어서 물을 질문도 없으면 막다른 길이 된다.
+    그때는 **무엇을 말할 수 있는지** 알려준다. 사전에 없는 말을 못 알아듣는
+    것은 규칙 기반의 본질이라, 범위를 드러내는 편이 정직하고 쓸모 있다.
     """
     if not note.understood:
-        return ChatTurn(
-            role="agent",
-            kind="understood",
-            text="말씀은 기록했지만 제가 이해하지 못했어요. "
-                 "아래 질문으로 다시 여쭤볼게요.",
-        )
+        if has_pending:
+            text = ("말씀은 기록했지만 제가 이해하지 못했어요. "
+                    "아래 질문으로 다시 여쭤볼게요.")
+        else:
+            topics = " · ".join(TOPICS)
+            text = ("말씀은 기록했어요. 다만 제가 영양 계획에 반영할 수 있는 "
+                    f"내용은 아직 이런 것들입니다.\n\n{topics}\n\n"
+                    "그 밖의 변화는 수의사 선생님과 상의해 주세요.")
+        return ChatTurn(role="agent", kind="understood", text=text)
 
     words = [UNDERSTOOD_WORD.get(k, k) for k in note.understood]
     body = ", ".join(words)
@@ -208,14 +216,17 @@ def build(
     """
     from_notes = {k for n in notes for k in n.understood}
 
+    ask_turns = pending(twin, context, today)
+
     turns = greeting(twin)
     turns += answered(context, skip=from_notes)
 
     for n in sorted(notes, key=lambda x: x.at):
         turns.append(ChatTurn(role="guardian", text=n.text, at=n.at))
-        turns.append(understood(n))
+        # 뒤에 물을 질문이 없으면 "못 알아들었다"로 끝나 막다른 길이 된다.
+        turns.append(understood(n, has_pending=bool(ask_turns)))
 
-    turns += pending(twin, context, today)
+    turns += ask_turns
 
     if plan is not None:
         turns.append(plan_summary(plan))

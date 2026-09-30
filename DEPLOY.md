@@ -123,3 +123,66 @@ cd petcare && python -m seed_remote && uvicorn api.main:app
 | Fly.io | 콜드스타트가 짧고 도쿄 리전이 있다. 카드 등록 필요 |
 | Railway | 설정이 간단하지만 무료 크레딧 소진 후 유료 |
 | Oracle Cloud 무료 VM | 잠들지 않지만 VM 을 직접 세팅해야 한다 |
+
+---
+
+## LLM 해석 켜기 (선택)
+
+자유 텍스트 해석은 **규칙 사전**으로 먼저 돈다. 키를 넣으면 LLM 으로 올라간다.
+
+```
+규칙 사전   키 없이 돈다. 사전에 있는 표현만 알아듣는다
+LLM        아무 문장이나 알아듣는다. 키가 필요하다
+```
+
+환경변수 세 개다. 없으면 자동으로 규칙 사전을 쓴다.
+
+```bash
+PEBBLE_LLM_PROVIDER=gemini          # 또는 anthropic
+PEBBLE_LLM_KEY=<API 키>
+PEBBLE_LLM_MODEL=gemini-2.0-flash   # 선택. 비우면 기본값
+```
+
+| | 키 받는 곳 | 기본 모델 |
+|---|---|---|
+| `gemini` | https://aistudio.google.com/apikey | `gemini-2.0-flash` |
+| `anthropic` | https://console.anthropic.com | `claude-haiku-4-5-20251001` |
+
+Render 에 넣으려면 **Environment** 탭에 추가하고 재배포하면 된다.
+로컬은 그냥 셸에서 내보낸다.
+
+```bash
+export PEBBLE_LLM_PROVIDER=gemini
+export PEBBLE_LLM_KEY=...
+cd petcare && uvicorn api.main:app
+```
+
+### 왜 이 자리에만 LLM 을 쓰나
+
+이 경로가 내놓는 것은 **정해진 key 15개뿐**이고, 그 key 들이 할 수 있는 일은
+`interpret()` 에서 **보류 · 차단 · 진료 권고**가 전부다.
+**용량을 올리는 경로가 없다.**
+
+그래서 추출이 틀려도 최악의 결과가 "영양제를 안 준다"다. 과다 급여가 아니다.
+`test_LLM_로도_용량을_올릴_수_없다` 가 이걸 못 박는다 — LLM 이 모든 항목에
+'예'를 뱉어도 기준선을 못 넘는다.
+
+```
+자유 텍스트 → [LLM] → 정해진 key/value → interpret() → 보류·차단
+                       ^^^^^^^^^^^^^^^
+                       여기서 자연어가 끊긴다
+```
+
+모르는 key 는 `sanitize()` 에서 **전부 버린다.** 환각이든 프롬프트
+인젝션이든 시스템 안으로 못 들어온다.
+
+사료 그램 수, 알갱이 개수, 안전 차단, 긴급정지에는 LLM 이 닿지 않는다.
+거기서 환각이 나면 실제로 잘못된 영양제가 나간다.
+
+### 실패하면
+
+키가 없든, 네트워크가 죽든, 응답이 이상하든 **규칙 사전으로 떨어진다.**
+발표 중 외부 API 하나 때문에 화면이 멈추면 안 된다. 6초 안에 응답이
+없으면 포기하고 규칙을 쓴다.
+
+어느 쪽이 썼는지는 응답의 `engine` 필드에 담긴다 (`rules` / `llm`).
