@@ -83,9 +83,11 @@
 | `gateway/` | 밥통(라즈베리파이) 게이트웨이 — 버퍼·전송·사출·폴백 |
 | `app-android/` | 안드로이드 앱 (Kotlin + Jetpack Compose) |
 | `ARCHITECTURE.md` | **시스템 구조** — 무엇이 어디서 돌아가는지 |
+| `HANDOFF-COLLAR.md` | **목줄 담당 인수인계** — 어떤 데이터를 어떤 형식으로 넘길지 |
 | `0811_md.md` | **설계 문서** — 왜 그렇게 판단하는지 |
 | `MVP_SCOPE.md` | 상용화하려면 뭐가 더 필요한지 |
 | `DESIGN-apple.md` | 앱 UI 디자인 토큰 |
+| `DEPLOY.md` | 클라우드 배포 방법 |
 
 ---
 
@@ -181,6 +183,7 @@ uvicorn api.main:app --reload
    구현하면서 종이 설계가 반증된 사례 9건이 표로 정리돼 있습니다.
 4. `petcare/core/prescribe.py` — 처리 순서 8단계. **순서 자체가 안전 설계입니다.**
 5. `petcare/core/telemetry.py` — 목줄이 보내야 할 것. 펌웨어 짤 때 이걸 보면 됩니다.
+   설명과 검증 방법은 `HANDOFF-COLLAR.md` 에 있습니다.
 6. `app-android/README.md` — 앱 구조와 디자인 규칙
 
 ---
