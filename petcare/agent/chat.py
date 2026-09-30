@@ -51,6 +51,8 @@ class Note(BaseModel):
     text: str
     at: datetime
     understood: dict[str, str] = Field(default_factory=dict)
+    #: 무엇이 해석했는가. rules | llm
+    engine: str = "rules"
 
 
 #: 축 이름을 사람 말로.
@@ -77,6 +79,7 @@ UNDERSTOOD_WORD = {
     "env_changed": "집 환경이 바뀌었다",
     "noise": "밤에 시끄러운 일이 있었다",
     "treats": "간식을 늘리셨다",
+    "eating_less": "밥을 잘 안 먹는다",
     "vomit": "구토나 설사가 있었다",
 }
 

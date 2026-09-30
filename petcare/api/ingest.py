@@ -410,7 +410,7 @@ def post_note(dog_id: str, body: NoteIn) -> dict:
         if db.get_dog(c, dog_id) is None:
             raise HTTPException(404, "등록되지 않은 개체입니다")
 
-        db.save_note(c, dog_id, text, ex.answers)
+        db.save_note(c, dog_id, text, ex.answers, ex.engine)
         if ex.answers:
             db.save_answers(c, dog_id, ex.answers)
         c.commit()
@@ -424,6 +424,9 @@ def post_note(dog_id: str, body: NoteIn) -> dict:
             "understood": ex.answers,
             "matched": ex.matched,
             "unmatched": ex.unmatched,
+            # 규칙 사전이 해석했는지 LLM 이 해석했는지. 키를 넣기 전/후를
+            # 같은 문장으로 비교할 수 있어야 한다.
+            "engine": ex.engine,
             "chat": _chat_payload(c, dog_id),
         }
 

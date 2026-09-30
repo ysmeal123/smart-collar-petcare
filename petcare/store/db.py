@@ -146,6 +146,7 @@ CREATE TABLE IF NOT EXISTS guardian_notes (
     dog_id     TEXT NOT NULL,
     text       TEXT NOT NULL,
     understood TEXT NOT NULL,
+    engine     TEXT NOT NULL DEFAULT 'rules',
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_notes ON guardian_notes(dog_id, created_at);
@@ -175,10 +176,25 @@ CREATE INDEX IF NOT EXISTS idx_cmd ON dispense_commands(dog_id, state);
 """
 
 
+#: 나중에 추가된 컬럼. CREATE TABLE IF NOT EXISTS 는 이미 있는 표를 안 고친다.
+#:
+#: 본격적인 마이그레이션 도구를 얹을 단계는 아니다. 표 하나에 컬럼 하나가
+#: 늘어난 것뿐이고, 이미 깔린 DB 는 개발용 몇 개뿐이다.
+#: 컬럼이 더 늘면 그때 Alembic 같은 것을 붙인다.
+LATE_COLUMNS = [
+    ("guardian_notes", "engine", "TEXT NOT NULL DEFAULT 'rules'"),
+]
+
+
 def init(path: Path | str | None = None) -> None:
     """스키마를 만든다. 몇 번을 돌려도 안전하다."""
     with connect(path) as c:
         c.executescript(SCHEMA)
+        for table, column, decl in LATE_COLUMNS:
+            try:
+                c.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+            except Exception:
+                pass          # 이미 있다
 
 
 # ---------------------------------------------------------------------------
@@ -435,13 +451,19 @@ def save_answers(c: Conn, dog_id: str, answers: dict[str, str]) -> None:
 
 
 def save_note(
-    c: Conn, dog_id: str, text: str, understood: dict[str, str]
+    c: Conn, dog_id: str, text: str, understood: dict[str, str],
+    engine: str = "rules",
 ) -> None:
-    """보호자 메모 원문을 남긴다. 추출 결과도 함께 — 나중에 비교할 근거가 된다."""
+    """
+    보호자 메모 원문을 남긴다.
+
+    추출 결과와 **무엇이 해석했는지**(규칙/LLM)를 함께 남긴다.
+    나중에 LLM 을 켰을 때 같은 문장에서 무엇이 달라졌는지 비교할 수 있다.
+    """
     c.execute(
-        "INSERT INTO guardian_notes(dog_id, text, understood, created_at) "
-        "VALUES(?,?,?,?)",
-        (dog_id, text, json.dumps(understood, ensure_ascii=False),
+        "INSERT INTO guardian_notes(dog_id, text, understood, engine, created_at) "
+        "VALUES(?,?,?,?,?)",
+        (dog_id, text, json.dumps(understood, ensure_ascii=False), engine,
          datetime.now().isoformat(timespec="seconds")),
     )
 
@@ -449,7 +471,7 @@ def save_note(
 def load_notes(c: Conn, dog_id: str, limit: int = 20) -> list[dict]:
     """최근 메모. 오래된 것부터 돌려준다 — 대화록은 시간 순서다."""
     rows = c.execute(
-        "SELECT text, understood, created_at FROM guardian_notes "
+        "SELECT text, understood, engine, created_at FROM guardian_notes "
         "WHERE dog_id=? ORDER BY created_at DESC, id DESC LIMIT ?",
         (dog_id, limit),
     ).fetchall()
@@ -457,6 +479,7 @@ def load_notes(c: Conn, dog_id: str, limit: int = 20) -> list[dict]:
         {
             "text": r["text"],
             "understood": json.loads(r["understood"]),
+            "engine": r["engine"],
             "at": r["created_at"],
         }
         for r in reversed(rows)

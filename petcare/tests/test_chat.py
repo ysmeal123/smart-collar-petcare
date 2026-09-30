@@ -441,3 +441,27 @@ def test_LLM_로도_용량을_올릴_수_없다(skin_ds, monkeypatch):
         skin_ds.profile, skin_ds.days, context=Context(answers=ex.answers)
     )
     assert _pellets(plan) <= base
+
+
+def test_모든_key_가_사람_말을_가진다():
+    """
+    UNDERSTOOD_WORD 에 없는 key 는 화면에 **내부 이름 그대로** 뜬다.
+    "eating_less — 이렇게 이해했어요" 같은 말이 보호자에게 나간다.
+    """
+    from agent.llm import ALLOWED
+
+    missing = set(ALLOWED) - set(chat_mod.UNDERSTOOD_WORD)
+    assert not missing, f"사람 말이 없는 key: {missing}"
+
+
+def test_해석한_key_가_화면에_노출되지_않는다():
+    """내부 key 가 하나라도 말풍선에 섞이면 안 된다."""
+    from agent.llm import ALLOWED
+
+    for key, values in ALLOWED.items():
+        note = chat_mod.Note(
+            text="테스트", at=datetime(2026, 9, 30, 10, 0),
+            understood={key: values[0]},
+        )
+        text = chat_mod.understood(note).text
+        assert key not in text, f"{key} 가 화면에 그대로 나온다"
