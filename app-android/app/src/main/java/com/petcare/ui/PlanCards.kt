@@ -1,6 +1,9 @@
 package com.petcare.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -419,5 +422,50 @@ fun OriginBadge(live: Boolean, note: String) {
             Spacer(Modifier.width(T.xs))
             Text(note, style = T.microLegal)
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 상담 입구
+// ---------------------------------------------------------------------------
+
+/**
+ * 대화 화면으로 들어가는 입구.
+ *
+ * 물을 것이 있으면 개수를 보여준다. 없으면 "특이사항을 알려주세요"로 바꾼다.
+ * 항상 같은 문구를 쓰면 물을 게 있을 때와 없을 때가 구분되지 않는다.
+ *
+ * 서버가 붙어 있을 때만 쓴다 — 해석과 재계산이 서버에서 일어나므로
+ * 데모에서 열면 답을 넣어도 계획이 안 바뀐다.
+ */
+@Composable
+fun ChatEntryCard(pending: Int, onClick: () -> Unit) {
+    val src = remember { MutableInteractionSource() }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .pressScale(src)
+            .background(T.canvas, RoundedCornerShape(T.rLg))
+            .border(1.dp, if (pending > 0) T.primary else T.hairline, RoundedCornerShape(T.rLg))
+            .clickable(interactionSource = src, indication = null, onClick = onClick)
+            .padding(T.md),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        ThinkingOrb(size = 36.dp)
+        Spacer(Modifier.width(T.md))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                if (pending > 0) "여쭤볼 것이 ${pending}개 있어요" else "특이사항을 알려주세요",
+                style = T.bodyStrong,
+            )
+            Spacer(Modifier.height(T.xxs))
+            Text(
+                if (pending > 0) "답변은 영양 계획에 바로 반영됩니다"
+                else "센서가 알 수 없는 것을 알려주시면 계획에 반영합니다",
+                style = T.caption.copy(color = T.inkMuted48),
+            )
+        }
+        Text("›", style = T.displayMd.copy(color = T.inkMuted48))
     }
 }

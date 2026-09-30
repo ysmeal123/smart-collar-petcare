@@ -165,3 +165,47 @@ data class DogTwin(
     @SerialName("ready_to_prescribe") val readyToPrescribe: Boolean = false,
     val attention: List<String> = emptyList(),
 )
+
+// ---------------------------------------------------------------------------
+// 대화
+//
+// `petcare/agent/chat.py` 의 ChatTurn 과 1:1.
+// 대화록은 서버가 저장된 답변·메모로부터 매번 다시 만든다. 앱은 상태를
+// 들고 있지 않다 — 앱을 새로 깔아도 같은 대화가 나온다.
+// ---------------------------------------------------------------------------
+
+@Serializable
+data class ChatTurn(
+    /** "agent" | "guardian" */
+    val role: String,
+    val text: String,
+    /** "text" | "question" | "understood" | "plan" */
+    val kind: String = "text",
+    val key: String = "",
+    val choices: List<String> = emptyList(),
+    val why: String = "",
+) {
+    val fromAgent: Boolean get() = role == "agent"
+
+    /** 서버로 보낼 값. 예/아니오는 yes/no 로 정규화한다. */
+    fun valueOf(option: String): String = when {
+        choices.size != 2 -> option
+        option == "네" -> "yes"
+        option == "아니요" -> "no"
+        else -> option
+    }
+}
+
+@Serializable
+data class ChatLog(
+    @SerialName("dog_name") val dogName: String = "",
+    val turns: List<ChatTurn> = emptyList(),
+)
+
+@Serializable
+data class NoteResult(
+    val understood: Map<String, String> = emptyMap(),
+    val matched: List<String> = emptyList(),
+    val unmatched: Boolean = false,
+    val chat: ChatLog = ChatLog(),
+)

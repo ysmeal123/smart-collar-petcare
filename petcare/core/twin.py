@@ -20,11 +20,12 @@ DogTwin — 개체의 현재 상태를 한 객체로 모은 것.
 from __future__ import annotations
 
 from datetime import date, timedelta
+from statistics import median
 from typing import Optional
 
 from pydantic import BaseModel, Field, computed_field
 
-from core.constants import BASELINE_DAYS
+from core.constants import BASELINE_DAYS, RECENT_DAYS
 from core.models import AxisScore, DailySummary, DogProfile, HealthAxis, Prescription
 from core.signal import extract_metrics, valid_mask
 
@@ -131,6 +132,28 @@ def _stage(days: int) -> tuple[str, str]:
     return "mature", "평소를 파악했습니다"
 
 
+def _recent_wear(days: list[DailySummary]) -> float:
+    """
+    최근 착용률. **마지막 하루가 아니라 최근 구간의 중앙값**이다.
+
+    마지막 날만 보면 하루 비어 있는 것만으로 0이 된다. 그리고 하루 비는 건
+    드문 일이 아니다 — 목줄 배터리가 나갔거나, BLE 가 안 붙었거나,
+    목욕시키느라 벗겨뒀거나, 일일 배치가 데이터보다 먼저 돌았거나.
+
+    그때 `ready_to_prescribe` 가 False 가 되면서 **영양제가 통째로 사라진다.**
+    44일을 잘 모았는데 하루 빈 것으로 전부 무효가 되는 건 과하다.
+    게다가 화면에는 "평소를 파악했습니다" 가 뜬 채로 사료만 나가서,
+    보호자는 왜 영양제가 없어졌는지 알 수 없다.
+
+    중앙값을 쓰면 하루 결측은 흡수하고, 이 게이트가 원래 잡으려던 것
+    (며칠째 목줄을 안 차고 있다)은 그대로 잡는다.
+    """
+    if not days:
+        return 0.0
+    recent = [d.wear_ratio for d in days[-RECENT_DAYS:]]
+    return round(float(median(recent)), 3)
+
+
 def _baseline(days: list[DailySummary]) -> Baseline:
     valid = valid_mask(days)
     n_valid = sum(valid)
@@ -216,7 +239,7 @@ def build(
             last.summary.walk_sec + last.summary.run_sec + last.summary.vigorous_sec
             if last else 0
         ),
-        wear_ratio=last.wear_ratio if last else 0.0,
+        wear_ratio=_recent_wear(days),
         data_days=len(days),
         prescription=prescription,
     )

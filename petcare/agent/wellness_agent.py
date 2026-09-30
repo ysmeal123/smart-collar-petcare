@@ -101,6 +101,11 @@ QUESTIONS: dict[HealthAxis, list[Question]] = {
             why="식이 알러지는 보통 2~6주에 걸쳐 나타납니다",
         ),
         Question(
+            key="env_exposure", axis=HealthAxis.SKIN,
+            text="최근에 풀밭이나 흙에서 놀았나요?",
+            why="야외 접촉은 접촉성 자극과 벼룩·진드기의 가장 흔한 경로입니다",
+        ),
+        Question(
             key="skin_visible", axis=HealthAxis.SKIN,
             text="피부가 붉거나 털이 빠진 부분이 보이나요?",
             type=AnswerType.CHOICE,
@@ -271,6 +276,10 @@ def interpret(context: Context) -> ContextEffect:
     if context.said_yes("shampoo_changed"):
         eff.defer_axes.append(HealthAxis.SKIN)
         eff.notes.append("샴푸를 바꾸셨습니다 — 2주 더 지켜봅니다")
+
+    if context.said_yes("env_exposure"):
+        eff.defer_axes.append(HealthAxis.SKIN)
+        eff.notes.append("풀밭·흙에서 놀았다고 하셨습니다 — 접촉성 자극일 수 있어 2주 지켜봅니다")
 
     if context.said_yes("recent_bath"):
         eff.notes.append("최근 목욕·수영이 있었습니다 — 며칠 더 지켜봅니다")

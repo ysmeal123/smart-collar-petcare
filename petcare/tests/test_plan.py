@@ -164,13 +164,26 @@ def test_센서가_아는_건_묻지_않는다():
 
 
 def test_이미_답한_질문은_다시_묻지_않는다(skin_ds):
+    """
+    답변 key 를 하드코딩하지 않는다.
+
+    질문을 하나 추가할 때마다 이 테스트가 깨지면, 검증하려던 것(쿨다운)이
+    아니라 목록의 길이를 검증하는 셈이다. 발화한 축의 질문을 목록에서
+    파생시켜 전부 답한 상태를 만든다.
+    """
+    from agent.wellness_agent import QUESTIONS
+
     rx, _ = prescribe(skin_ds.profile, skin_ds.days)
     t = twin_mod.build(skin_ds.profile, skin_ds.days, rx.axes, rx)
 
-    ctx = Context(
-        answers={"shampoo_changed": "no", "food_changed": "no", "skin_visible": "없어요"},
-        updated_at=t.as_of,
-    )
+    fired = [a.axis for a in t.wellness if a.active]
+    assert fired, "발화한 축이 없으면 이 테스트는 의미가 없다"
+
+    answers = {
+        q.key: (q.choices[-1] if q.choices else "no")
+        for axis in fired for q in QUESTIONS.get(axis, [])
+    }
+    ctx = Context(answers=answers, updated_at=t.as_of)
     assert ask(t, ctx) == []
 
 

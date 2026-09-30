@@ -135,6 +135,21 @@ CREATE TABLE IF NOT EXISTS guardian_context (
     PRIMARY KEY (dog_id, key)
 );
 
+-- 보호자가 자유롭게 적은 특이사항.
+--
+-- guardian_context 와 따로 둔다. 저기는 구조화된 값만 담는 곳이고,
+-- 여기는 **보호자가 실제로 쓴 문장**을 원문 그대로 남기는 곳이다.
+-- 추출 결과(understood)를 함께 저장해서, 나중에 추출기를 LLM 으로 바꿀 때
+-- 같은 문장에 대해 예전 결과와 비교할 수 있게 한다.
+CREATE TABLE IF NOT EXISTS guardian_notes (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    dog_id     TEXT NOT NULL,
+    text       TEXT NOT NULL,
+    understood TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_notes ON guardian_notes(dog_id, created_at);
+
 -- 급여 계획. 최종 출력을 그대로 보관한다.
 -- 시뮬레이션 결과가 안에 들어 있어 "왜 그 계획이 통과했는가"를 나중에 볼 수 있다.
 CREATE TABLE IF NOT EXISTS plans (
@@ -417,6 +432,35 @@ def save_answers(c: Conn, dog_id: str, answers: dict[str, str]) -> None:
         "  value=excluded.value, answered_at=excluded.answered_at",
         [(dog_id, k, v, now) for k, v in answers.items()],
     )
+
+
+def save_note(
+    c: Conn, dog_id: str, text: str, understood: dict[str, str]
+) -> None:
+    """보호자 메모 원문을 남긴다. 추출 결과도 함께 — 나중에 비교할 근거가 된다."""
+    c.execute(
+        "INSERT INTO guardian_notes(dog_id, text, understood, created_at) "
+        "VALUES(?,?,?,?)",
+        (dog_id, text, json.dumps(understood, ensure_ascii=False),
+         datetime.now().isoformat(timespec="seconds")),
+    )
+
+
+def load_notes(c: Conn, dog_id: str, limit: int = 20) -> list[dict]:
+    """최근 메모. 오래된 것부터 돌려준다 — 대화록은 시간 순서다."""
+    rows = c.execute(
+        "SELECT text, understood, created_at FROM guardian_notes "
+        "WHERE dog_id=? ORDER BY created_at DESC, id DESC LIMIT ?",
+        (dog_id, limit),
+    ).fetchall()
+    return [
+        {
+            "text": r["text"],
+            "understood": json.loads(r["understood"]),
+            "at": r["created_at"],
+        }
+        for r in reversed(rows)
+    ]
 
 
 def load_context(c: Conn, dog_id: str) -> tuple[dict[str, str], str | None]:

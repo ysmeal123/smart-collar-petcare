@@ -91,6 +91,40 @@ class Repository(private val context: Context) {
         return runCatching { Net.answer(server, id, answers, token) }.isSuccess
     }
 
+    /**
+     * 대화록.
+     *
+     * 서버가 없으면 대화 자체가 성립하지 않는다 — 해석과 재계산이 서버에서
+     * 일어나기 때문이다. 데모 대화를 만들어 흉내낼 수도 있지만, 그러면
+     * 답을 넣어도 계획이 안 바뀌는 화면이 된다. 그건 문진이 장식이던
+     * 예전 상태와 같다. 서버가 없으면 없다고 말한다.
+     */
+    suspend fun chat(base: String?, dogId: String?, token: String = ""): ChatLog? {
+        val server = base?.takeIf { it.isNotBlank() } ?: return null
+        val id = dogId?.takeIf { it.isNotBlank() } ?: return null
+        return runCatching { Net.chat(server, id, token) }.getOrNull()
+    }
+
+    /** 선택지 답변. 질문 key 를 그대로 보낸다 — 서버가 추출할 필요가 없다. */
+    suspend fun answerQuestion(
+        base: String?, dogId: String?, key: String, value: String, token: String = "",
+    ): NoteResult? {
+        val server = base?.takeIf { it.isNotBlank() } ?: return null
+        val id = dogId?.takeIf { it.isNotBlank() } ?: return null
+        return runCatching {
+            Net.answerQuestion(server, id, key, value, token)
+        }.getOrNull()
+    }
+
+    /** 특이사항 전달. 해석 결과와 갱신된 대화록이 함께 온다. */
+    suspend fun sendNote(
+        base: String?, dogId: String?, text: String, token: String = "",
+    ): NoteResult? {
+        val server = base?.takeIf { it.isNotBlank() } ?: return null
+        val id = dogId?.takeIf { it.isNotBlank() } ?: return null
+        return runCatching { Net.note(server, id, text, token) }.getOrNull()
+    }
+
     suspend fun sendWeight(base: String?, dogId: String?, kg: Double): Boolean {
         val server = base?.takeIf { it.isNotBlank() } ?: return false
         val id = dogId?.takeIf { it.isNotBlank() } ?: return false

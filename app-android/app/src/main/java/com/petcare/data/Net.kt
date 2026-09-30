@@ -84,6 +84,21 @@ object Net {
         return json.decodeFromString(raw)
     }
 
+    /**
+     * 선택지 답변. 질문의 key 를 그대로 보낸다.
+     *
+     * 자유 텍스트(note)와 경로를 나누는 이유: 칩은 이미 자기 key 를 안다.
+     * 그걸 문장으로 바꿔 보내면 서버가 다시 추출해야 하고, "보여요" 같은
+     * 짧은 답은 추출에 실패한다. 아는 것을 버리고 추론하게 만들면 안 된다.
+     */
+    suspend fun answerQuestion(
+        base: String, dogId: String, key: String, value: String, token: String = "",
+    ): NoteResult {
+        val payload = """{"answers":{"${key.escape()}":"${value.escape()}"}}"""
+        val raw = request("$base/v1/dogs/$dogId/context", "POST", payload, token)
+        return json.decodeFromString(raw)
+    }
+
     /** 보호자 답변을 올린다. 반환은 서버가 알려주는 조정 결과. */
     suspend fun answer(
         base: String, dogId: String, answers: Map<String, String>, token: String = "",
@@ -101,6 +116,20 @@ object Net {
     suspend fun putWeight(
         base: String, dogId: String, kg: Double, token: String = "",
     ): String = request("$base/v1/dogs/$dogId/weight", "POST", """{"kg":$kg}""", token)
+
+    suspend fun chat(base: String, dogId: String, token: String = ""): ChatLog {
+        val raw = request("$base/v1/dogs/$dogId/chat", token = token)
+        return json.decodeFromString(raw)
+    }
+
+    /** 자유 텍스트 특이사항. 서버가 해석 결과와 갱신된 대화록을 돌려준다. */
+    suspend fun note(
+        base: String, dogId: String, text: String, token: String = "",
+    ): NoteResult {
+        val payload = """{"text":"${text.escape()}"}"""
+        val raw = request("$base/v1/dogs/$dogId/note", "POST", payload, token)
+        return json.decodeFromString(raw)
+    }
 
     /**
      * 서버를 깨운다.

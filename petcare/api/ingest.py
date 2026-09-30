@@ -311,6 +311,15 @@ def save_context(dog_id: str, body: AnswersIn) -> dict:
         if db.get_dog(c, dog_id) is None:
             raise HTTPException(404, "등록되지 않은 개체입니다")
         db.save_answers(c, dog_id, body.answers)
+        c.commit()
+
+        # 저장만 하고 끝내면 안 된다.
+        #
+        # 대시보드는 저장된 계획을 읽는다. 여기서 다시 계산하지 않으면
+        # 답을 했는데 화면의 계획은 그대로다. 답변이 저장되는데 아무 일도
+        # 일어나지 않는, 에러 없는 실패가 된다.
+        pipeline.recompute(c, dog_id)
+        c.commit()
 
         eff = interpret(Context(answers=body.answers))
         return {
@@ -319,6 +328,103 @@ def save_context(dog_id: str, body: AnswersIn) -> dict:
             "block_all": eff.block_all,
             "vet_referral": eff.vet_referral,
             "notes": eff.notes,
+            "chat": _chat_payload(c, dog_id),
+        }
+
+
+class NoteIn(BaseModel):
+    text: str
+
+
+def _chat_payload(c, dog_id: str) -> dict:
+    """
+    대화록을 만든다.
+
+    **저장된 것으로부터 매번 다시 만든다.** 대화 상태를 따로 들고 있지 않다.
+    그래야 서버가 재시작해도, 앱을 새로 깔아도 같은 화면이 나온다.
+    """
+    from agent import chat as chat_mod
+    from agent.wellness_agent import Context
+    from core.inference import evaluate_axes
+    from core.models import DailySummary, DogProfile
+    from core.plan import FeedingPlan
+    from core.twin import build as build_twin
+
+    raw = db.get_dog(c, dog_id)
+    if raw is None:
+        raise HTTPException(404, "등록되지 않은 개체입니다")
+
+    profile = DogProfile.model_validate(raw)
+    days = [DailySummary.model_validate(d) for d in db.load_daily(c, dog_id)]
+    if not days:
+        raise HTTPException(409, "아직 수집된 데이터가 없습니다")
+
+    answers, answered_at = db.load_context(c, dog_id)
+    context = Context(
+        answers=answers,
+        updated_at=date.fromisoformat(answered_at[:10]) if answered_at else None,
+    )
+
+    axes = evaluate_axes(profile, days)
+    twin = build_twin(profile, days, axes)
+
+    notes = [chat_mod.Note.model_validate(n) for n in db.load_notes(c, dog_id)]
+
+    saved = db.latest_plan(c, dog_id)
+    plan = FeedingPlan.model_validate(saved) if saved else None
+
+    turns = chat_mod.build(twin, context, notes, plan)
+    return {
+        "dog_name": profile.name,
+        "turns": [json.loads(t.model_dump_json()) for t in turns],
+    }
+
+
+@router.get("/dogs/{dog_id}/chat", dependencies=[Depends(require_app)])
+def get_chat(dog_id: str) -> dict:
+    """대화 화면. 문진을 말풍선으로 보여주기 위한 형태."""
+    with db.connect() as c:
+        return _chat_payload(c, dog_id)
+
+
+@router.post("/dogs/{dog_id}/note", dependencies=[Depends(require_app)])
+def post_note(dog_id: str, body: NoteIn) -> dict:
+    """
+    보호자가 자유롭게 적은 특이사항.
+
+    자연어는 **여기서 끊긴다.** 원문은 기록만 하고, 아래로 내려가는 것은
+    extract() 가 뽑은 구조화된 key/value 뿐이다.
+
+    못 알아들어도 원문은 저장한다. 조용히 버리면 보호자는 전달했다고
+    믿는데 아무 일도 일어나지 않는다.
+    """
+    from agent.extract import extract
+
+    text = body.text.strip()
+    if not text:
+        raise HTTPException(422, "내용이 비어 있습니다")
+
+    ex = extract(text)
+
+    with db.connect() as c:
+        if db.get_dog(c, dog_id) is None:
+            raise HTTPException(404, "등록되지 않은 개체입니다")
+
+        db.save_note(c, dog_id, text, ex.answers)
+        if ex.answers:
+            db.save_answers(c, dog_id, ex.answers)
+        c.commit()
+
+        # 추출된 것이 있으면 계획을 다시 만든다. 없으면 대화록만 갱신한다.
+        if ex.answers:
+            pipeline.recompute(c, dog_id)
+            c.commit()
+
+        return {
+            "understood": ex.answers,
+            "matched": ex.matched,
+            "unmatched": ex.unmatched,
+            "chat": _chat_payload(c, dog_id),
         }
 
 

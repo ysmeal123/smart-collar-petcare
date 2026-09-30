@@ -64,6 +64,9 @@ fun DashboardScreen(
     var error by remember { mutableStateOf<String?>(null) }
     var reload by remember { mutableIntStateOf(0) }
     var waking by remember { mutableStateOf(false) }
+    // 상담창은 재로드보다 오래 살아야 한다. 답변 -> reload++ -> Content 재생성
+    // 이므로, Content 안에 두면 답을 할 때마다 창이 닫힌다.
+    var showChat by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(scenario, dog, reload) {
@@ -96,7 +99,10 @@ fun DashboardScreen(
                 modifier = Modifier.align(Alignment.Center),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                CircularProgressIndicator(color = T.primary)
+                // 여기가 앱에서 가장 긴 기다림이다(콜드스타트 30~60초).
+                // 기본 스피너 대신 궤도를 돌린다 — 기다리는 동안 무슨 일이
+                // 일어나는지 문구로 함께 알려준다.
+                ThinkingOrb(size = 72.dp)
                 if (waking) {
                     Spacer(Modifier.height(T.md))
                     Text("서버를 깨우는 중입니다", style = T.caption)
@@ -106,6 +112,9 @@ fun DashboardScreen(
             }
 
             else -> Content(
+                repo = repo,
+                onReload = { reload++ },
+                onOpenChat = { showChat = true },
                 data = data!!,
                 loaded = loaded!!,
                 dog = dog,
@@ -123,11 +132,23 @@ fun DashboardScreen(
                 },
             )
         }
+
+        if (showChat) {
+            ChatSheet(
+                dog = dog,
+                repo = repo,
+                onDismiss = { showChat = false },
+                onChanged = { reload++ },
+            )
+        }
     }
 }
 
 @Composable
 private fun Content(
+    repo: Repository,
+    onReload: () -> Unit,
+    onOpenChat: () -> Unit,
     data: Dashboard,
     loaded: Loaded,
     dog: MyDog,
@@ -207,7 +228,11 @@ private fun Content(
                 SimulationCard(it)
             }
 
-            if (plan != null && plan.questions.isNotEmpty()) {
+            if (loaded.origin == Origin.LIVE) {
+                Spacer(Modifier.height(T.sm))
+                ChatEntryCard(plan?.questions?.size ?: 0, onOpenChat)
+            } else if (plan != null && plan.questions.isNotEmpty()) {
+                // 데모에는 서버가 없어 상담을 할 수 없다. 질문만 보여준다.
                 Spacer(Modifier.height(T.sm))
                 QuestionCard(plan.questions, onAnswer)
             }

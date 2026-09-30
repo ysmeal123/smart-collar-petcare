@@ -134,6 +134,7 @@ fun TextLink(
 fun UtilityButton(
     label: String,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
     onClick: () -> Unit,
 ) {
     val src = remember { MutableInteractionSource() }
@@ -141,8 +142,15 @@ fun UtilityButton(
     Box(
         modifier = modifier
             .pressScale(src)
-            .background(T.ink, RoundedCornerShape(T.rSm))
-            .clickable(interactionSource = src, indication = null, onClick = onClick)
+            // 비활성은 색을 흐리게만 한다. 이 시스템에는 그림자가 없으므로
+            // 눌림·비활성을 명도로만 표현한다.
+            .background(if (enabled) T.ink else T.chipTranslucent, RoundedCornerShape(T.rSm))
+            .clickable(
+                interactionSource = src,
+                indication = null,
+                enabled = enabled,
+                onClick = onClick,
+            )
             .padding(horizontal = 15.dp, vertical = T.xs),
     ) {
         Text(label, style = T.buttonUtility.copy(color = T.onDark))

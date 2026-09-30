@@ -253,10 +253,22 @@ def build(
     # 기준선이 안 여물었으면 사료만 준다.
     # 비교 대상이 없는 상태의 판정으로 영양제를 주는 건 근거가 없다.
     if not t.ready_to_prescribe:
-        plan.blocked_reason = (
-            f"{t.baseline.stage_note} "
-            f"(관찰 {t.baseline.days_observed}일). 사료만 정상 급여합니다."
-        )
+        # 막힌 이유를 정확히 말한다.
+        #
+        # 예전에는 두 경우 모두 기준선 문구를 썼다. 그래서 착용률 때문에
+        # 막혔을 때 "평소를 파악했습니다. 사료만 정상 급여합니다." 라는
+        # 앞뒤가 안 맞는 말이 떴고, 보호자는 영양제가 왜 사라졌는지
+        # 알 수 없었다.
+        if not t.baseline.mature:
+            plan.blocked_reason = (
+                f"{t.baseline.stage_note} "
+                f"(관찰 {t.baseline.days_observed}일). 사료만 정상 급여합니다."
+            )
+        else:
+            plan.blocked_reason = (
+                f"최근 목줄 착용률이 {t.wear_ratio:.0%}입니다. "
+                "판단할 근거가 부족해 사료만 정상 급여합니다."
+            )
         rx = rx.model_copy(update={"items": []})
 
     plan.meals = split(rx, profile, day)

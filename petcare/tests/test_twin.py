@@ -12,6 +12,8 @@ DogTwin 조립 · 14일 전향 시뮬레이션 검증.
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 
 from core import simulation as sim
@@ -191,3 +193,52 @@ def test_실제_처방을_돌려도_통과한다(skin_ds):
         intake_ratio=t.intake.recent_ratio or 1.0,
     )
     assert r.passed is True, r.reasons
+
+
+def test_하루_결측이_영양제를_통째로_없애지_않는다():
+    """
+    실제로 겪은 버그다.
+
+    일일 배치가 수집보다 먼저 돌면 빈 날이 하나 생긴다. 착용률을
+    '마지막 날' 로 읽으면 그 하루 때문에 0이 되고, ready_to_prescribe 가
+    False 가 되면서 44일치 근거가 통째로 무효가 됐다.
+    화면에는 "평소를 파악했습니다" 가 뜬 채 사료만 나갔다.
+
+    하루 비는 건 드문 일이 아니다 - 배터리, BLE, 목욕, 배치 순서.
+    """
+    from core.plan import build as build_plan
+    from mock.generator import generate
+
+    ds = generate("skin")
+    base, _, _ = build_plan(ds.profile, ds.days)
+    assert sum(p.count for m in base.meals for p in m.pellets) > 0
+
+    # 데이터가 없는 하루를 뒤에 붙인다
+    empty = ds.days[-1].model_copy(deep=True)
+    empty.date = ds.days[-1].date + timedelta(days=1)
+    empty.wear_ratio = 0.0
+
+    after, _, _ = build_plan(ds.profile, ds.days + [empty])
+    assert sum(p.count for m in after.meals for p in m.pellets) > 0, \
+        "하루 결측으로 영양제가 전부 사라졌다"
+
+
+def test_며칠째_안_차면_여전히_막는다():
+    """
+    하루 결측은 흡수하되, 이 게이트가 원래 잡으려던 것은 그대로 잡아야 한다.
+    며칠째 목줄을 안 차고 있으면 판단할 근거가 없는 게 맞다.
+    """
+    from core.plan import build as build_plan
+    from mock.generator import generate
+
+    ds = generate("skin")
+    days = list(ds.days)
+    for i in range(5):
+        gap = days[-1].model_copy(deep=True)
+        gap.date = days[-1].date + timedelta(days=1)
+        gap.wear_ratio = 0.0
+        days.append(gap)
+
+    plan, _, _ = build_plan(ds.profile, days)
+    assert sum(p.count for m in plan.meals for p in m.pellets) == 0
+    assert "착용률" in plan.blocked_reason, "막힌 이유를 정확히 말해야 한다"
