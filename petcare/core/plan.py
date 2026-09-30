@@ -216,7 +216,18 @@ def build(
     """
     day = today or (days[-1].date if days else date.today())
 
-    rx, next_state = prescribe(profile, days, state=state, today=day)
+    # 보호자 답변을 먼저 해석한다. 자연어는 여기서 끊기고, 아래로는
+    # 구조화된 값(보류할 축 / 전체 차단)만 내려간다.
+    effect = None
+    if context is not None:
+        from agent.wellness_agent import interpret
+        effect = interpret(context)
+
+    rx, next_state = prescribe(
+        profile, days, state=state, today=day,
+        defer_axes=(effect.defer_axes if effect else None),
+        block_all=(effect.block_all if effect else False),
+    )
     t = twin_mod.build(profile, days, rx.axes, rx, as_of=day)
 
     plan = FeedingPlan(
@@ -229,7 +240,12 @@ def build(
         escalation_reason=rx.escalation_reason,
         trace=rx.trace,
         attention=t.attention,
-        observations=[a.message for a in rx.axes if a.active and a.message],
+        # `AxisScore.active` 는 "**처방 중**"을 뜻한다. 관찰 여부가 아니다.
+        # 여기서 active 로 걸러 버리면 귀축(알림 전용)과 식욕축(차단 전용)의
+        # 메시지가 사용자에게 절대 도달하지 못한다 — 알림만 하는 축의 알림이
+        # 안 나가는 셈이다. message 는 관찰 기준으로 이미 채워져 있으니
+        # 그것만 보면 된다.
+        observations=[a.message for a in rx.axes if a.message],
         baseline_stage=t.baseline.stage,
         ready=t.ready_to_prescribe,
     )
@@ -261,5 +277,11 @@ def build(
              "type": q.type.value, "choices": q.choices, "why": q.why}
             for q in ask(t, context, day)
         ]
+
+    # 진료 권고는 제일 위에 둔다. 영양제 이야기보다 먼저 읽혀야 한다.
+    if effect is not None:
+        if effect.vet_referral:
+            plan.attention = ["🏥 진료를 먼저 권합니다"] + plan.attention
+        plan.observations = plan.observations + effect.notes
 
     return plan, rx, next_state

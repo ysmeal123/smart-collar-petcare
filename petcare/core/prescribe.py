@@ -34,6 +34,7 @@ from core.inference import PrescriptionState, check_escalation, evaluate_axes, s
 from core.models import (
     DailySummary,
     DogProfile,
+    HealthAxis,
     Medication,
     Prescription,
     SurgeryType,
@@ -59,12 +60,63 @@ def _gut_trigger(profile: DogProfile) -> str | None:
     return None
 
 
+def _apply_context(
+    fired: list,
+    defer_axes: list[HealthAxis],
+    block_all: bool,
+    trace: list[TraceStep],
+) -> list:
+    """
+    보호자 답변을 축 발화에 적용한다.
+
+    **줄이기만 한다. 늘리는 경로는 없다.**
+    보호자가 "괜찮아요"라고 답해서 용량이 올라가는 일은 일어나지 않는다.
+    문진은 브레이크지 액셀이 아니다.
+
+    센서가 발화한 사실 자체는 지우지 않는다(`rx.axes` 는 그대로 둔다).
+    관찰은 앱에 계속 보여주고, **처방만** 보류한다.
+    """
+    if block_all:
+        if fired:
+            trace.append(TraceStep(
+                step="문진 · 전체 보류",
+                detail="구토·설사를 보고하셨습니다 — 영양제를 전부 멈춥니다. "
+                       "원인을 모르는 채 조성을 바꾸면 상태를 더 흐립니다.",
+                changed=True,
+            ))
+        return []
+
+    if not defer_axes:
+        return fired
+
+    kept = []
+    for a in fired:
+        if a.axis in defer_axes:
+            trace.append(TraceStep(
+                step=f"문진 · {a.axis.value} 보류",
+                detail="보호자 답변으로 원인이 설명됩니다 — 처방하지 않고 지켜봅니다.",
+                changed=True,
+            ))
+        else:
+            kept.append(a)
+    return kept
+
+
 def prescribe(
     profile: DogProfile,
     days: list[DailySummary],
     state: PrescriptionState | None = None,
     today: date | None = None,
+    *,
+    defer_axes: list[HealthAxis] | None = None,
+    block_all: bool = False,
 ) -> tuple[Prescription, PrescriptionState]:
+    """
+    `defer_axes` / `block_all` 은 보호자 문진의 결과다.
+
+    자연어가 아니라 **구조화된 값**으로 받는다. core 는 agent 를 모른다.
+    해석은 `agent.wellness_agent.interpret()` 가 하고, 여기는 결과만 받는다.
+    """
     state = state or PrescriptionState()
     today = today or days[-1].date
     trace: list[TraceStep] = []
@@ -95,6 +147,8 @@ def prescribe(
     axes = evaluate_axes(profile, days, state)
     fired = [a for a in axes if a.active]
 
+    # 센서가 본 것을 먼저 기록한다. 보호자 답변으로 보류하더라도
+    # **발화 사실 자체는 지우지 않는다.** 근거는 순서가 곧 설명이다.
     if fired:
         trace.append(TraceStep(
             step="상태 추론",
@@ -106,6 +160,11 @@ def prescribe(
             step="상태 추론",
             detail="모든 지표가 평소 범위입니다. 영양제를 처방하지 않습니다.",
         ))
+
+    # 보호자 답변은 용량 산출 **전**에 적용한다.
+    # 오메가3는 피부·관절 두 축이 함께 요구하므로, 용량이 합쳐진 뒤에는
+    # 어느 축에서 왔는지 알 수 없어 한 축만 보류하는 것이 불가능해진다.
+    fired = _apply_context(fired, defer_axes or [], block_all, trace)
 
     # ── 3. 사료량 ──────────────────────────────────────────────────────
     trace.extend(energy.trace)

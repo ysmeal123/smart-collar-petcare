@@ -243,3 +243,112 @@ def test_상태_설명에_진단_용어를_쓰지_않는다(skin_ds):
     assert "초코" in text
     for word in ("염", "진단", "질환", "병입니다"):
         assert word not in text, f"진단 언어가 들어갔다: {word}"
+
+
+# ---------------------------------------------------------------------------
+# 문진 -> 계획 (연결 자체를 검증한다)
+#
+# 위의 테스트들은 interpret() 를 단독으로만 확인한다. 그래서 interpret() 가
+# 파이프라인에 연결돼 있지 않아도 전부 통과했다. 실제로 그런 상태였다 —
+# 답변은 저장되고 앱에 되돌아왔지만 처방은 한 톨도 안 바뀌었다.
+#
+# 아래는 "답변이 최종 출력까지 닿는가"를 본다.
+# ---------------------------------------------------------------------------
+
+def _pellets(plan) -> int:
+    return sum(p.count for m in plan.meals for p in m.pellets)
+
+
+def test_문진_답변이_계획까지_닿는다(skin_ds):
+    """이게 깨지면 문진은 장식이다."""
+    base, _, _ = build(skin_ds.profile, skin_ds.days, context=Context())
+    assert _pellets(base) > 0, "피부 시나리오인데 영양제가 안 나왔다"
+
+    after, _, _ = build(
+        skin_ds.profile, skin_ds.days,
+        context=Context(answers={"shampoo_changed": "yes"}),
+    )
+    assert _pellets(after) == 0, "샴푸를 바꿨다는데 피부 처방이 그대로다"
+    assert after.total_food_g == base.total_food_g, "사료는 건드리면 안 된다"
+
+
+def test_구토_설사는_영양제를_전부_뺀다(skin_ds):
+    plan, _, _ = build(
+        skin_ds.profile, skin_ds.days,
+        context=Context(answers={"vomit": "yes"}),
+    )
+    assert _pellets(plan) == 0
+    assert plan.total_food_g > 0, "밥까지 끊으면 안 된다"
+    assert any("진료" in a for a in plan.attention)
+
+
+def test_처방은_보류해도_관찰은_남는다(skin_ds):
+    """
+    센서가 본 사실을 지우지 않는다.
+
+    보호자에게는 '긁기가 늘었다'를 계속 보여주고, 처방만 미룬다.
+    관찰까지 지우면 보호자가 상태를 모른 채 넘어간다.
+    """
+    plan, _, _ = build(
+        skin_ds.profile, skin_ds.days,
+        context=Context(answers={"shampoo_changed": "yes"}),
+    )
+    assert plan.observations, "관찰이 사라졌다"
+    assert any("샴푸" in o for o in plan.observations), "보류 사유가 안 보인다"
+
+
+def test_문진은_용량을_올릴_수_없다(skin_ds):
+    """
+    구조적 보장.
+
+    답변으로 용량이 오르는 경로가 생기면, 답변을 유도해 매출을 늘릴 수 있다.
+    모든 질문에 '예'를 찍어도 기준선을 넘지 못해야 한다.
+    """
+    from agent.wellness_agent import QUESTIONS
+
+    base = _pellets(build(skin_ds.profile, skin_ds.days, context=Context())[0])
+
+    keys = {q.key for qs in QUESTIONS.values() for q in qs}
+    for key in sorted(keys):
+        for value in ("yes", "보여요"):
+            plan, _, _ = build(
+                skin_ds.profile, skin_ds.days,
+                context=Context(answers={key: value}),
+            )
+            assert _pellets(plan) <= base, f"{key}={value} 가 용량을 올렸다"
+
+
+def test_답변_표기가_달라도_인식한다():
+    """
+    정규화가 앱에만 있으면, 다른 클라이언트가 '예' 를 보낼 때
+    아무 에러 없이 조용히 무시된다. 서버에서도 받아준다.
+    """
+    for value in ("yes", "예", "네", "Yes", " yes "):
+        eff = interpret(Context(answers={"limping": value}))
+        assert HealthAxis.MOBILITY in eff.defer_axes, f"{value!r} 를 놓쳤다"
+
+    for value in ("no", "아니요", ""):
+        eff = interpret(Context(answers={"limping": value}))
+        assert eff.defer_axes == [], f"{value!r} 를 긍정으로 읽었다"
+
+
+def test_알림전용_축의_알림이_사용자에게_도달한다():
+    """
+    `AxisScore.active` 는 '처방 중'을 뜻한다. 관찰 여부가 아니다.
+
+    이걸로 관찰 목록을 걸렀더니, 귀축(알림 전용)과 식욕축(차단 전용)의
+    메시지가 사용자에게 한 번도 도달하지 않았다.
+    알림만 하는 축의 알림이 안 나가면 그 축은 존재 이유가 없다.
+    """
+    from mock.generator import generate
+
+    ds = generate("acute")
+    plan, rx, _ = build(ds.profile, ds.days)
+
+    appetite = next(a for a in rx.axes if a.axis is HealthAxis.APPETITE)
+    assert appetite.message, "식욕축이 할 말이 있어야 하는 시나리오다"
+    assert appetite.active is False, "식욕축은 처방 권한이 없다"
+
+    assert appetite.message in plan.observations, (
+        "처방 권한이 없는 축의 관찰이 사용자에게 도달하지 않는다"
+    )

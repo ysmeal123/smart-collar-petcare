@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 from enum import Enum
+from typing import ClassVar
 
 from pydantic import BaseModel, Field
 
@@ -65,8 +66,17 @@ class Context(BaseModel):
     answers: dict[str, str] = Field(default_factory=dict)
     updated_at: date | None = None
 
+    #: 긍정으로 받아들이는 값.
+    #:
+    #: 앱은 "네"를 "yes"로 정규화해서 보낸다. 그런데 정규화가 클라이언트에만
+    #: 있으면, 다른 클라이언트(게이트웨이·curl·팀원 테스트)가 "예"를 보낼 때
+    #: **아무 에러 없이 조용히 무시된다.** 처방이 안 바뀌는데 이유를 알 수 없다.
+    #: 서버에서 한 번 더 받아준다.
+    YES: ClassVar[frozenset[str]] = frozenset({"yes", "y", "true", "1", "네", "예", "있어요", "보여요"})
+
     def said_yes(self, key: str) -> bool:
-        return self.answers.get(key) == "yes"
+        v = self.answers.get(key)
+        return v is not None and v.strip().lower() in self.YES
 
     def known(self, key: str) -> bool:
         return key in self.answers
