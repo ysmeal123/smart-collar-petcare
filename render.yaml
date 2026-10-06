@@ -6,6 +6,10 @@ services:
   - type: web
     name: pebble-api
     runtime: docker
+    # 명시하지 않으면 유료 플랜으로 만들어질 수 있다. 캡스톤에는 free 로 충분하다.
+    # free 웹 서비스는 15분 놀면 잠들고 깨는 데 30~60초가 걸린다 (앱이 대응한다).
+    plan: free
+    region: singapore
     dockerfilePath: ./Dockerfile
     healthCheckPath: /health
     envVars:
