@@ -22,8 +22,19 @@
 from __future__ import annotations
 
 import sys
+import time
 
 from agent.extract import extract
+
+#: LLM 을 잴 때 호출 사이 간격.
+#:
+#: 무료 티어는 분당 요청 수가 묶여 있다. 41건을 연속으로 쏘면 두어 건 만에
+#: 429 가 나고, 나머지는 전부 규칙 사전으로 떨어져서 **규칙과 똑같은 점수**가
+#: 나온다. 측정값이 아니라 측정 실패인데 숫자만 보면 구분이 안 된다.
+#:
+#: 실사용에서는 문제가 아니다. 보호자가 메모를 쓰는 건 하루 몇 번이고,
+#: 그때 429 가 나면 규칙 사전이 받는 게 맞다. 여기서만 천천히 간다.
+LLM_DELAY_S = 1.5
 
 #: (문장, 정답 key 집합)
 #:
@@ -98,9 +109,20 @@ def main() -> int:
 
     tp = fp = fn = 0
     wrong: list[tuple[str, set, set]] = []
+    fell_back = 0
 
-    for text, want in CASES:
-        got = set(extract(text).answers)
+    if llm.enabled():
+        total_s = int(len(CASES) * LLM_DELAY_S)
+        print(f"  (속도 제한 때문에 천천히 갑니다 — 약 {total_s // 60}분 {total_s % 60}초)")
+
+    for i, (text, want) in enumerate(CASES):
+        if llm.enabled() and i:
+            time.sleep(LLM_DELAY_S)
+
+        result = extract(text)
+        if llm.enabled() and result.engine != "llm":
+            fell_back += 1
+        got = set(result.answers)
         hit = got & want
         tp += len(hit)
         fp += len(got - want)
@@ -124,6 +146,11 @@ def main() -> int:
                 print(f"      오탐: {sorted(extra)}")
 
     print("\n" + "=" * 72)
+    if fell_back:
+        # 떨어진 건 LLM 점수가 아니다. 숫자만 보면 구분이 안 되므로 반드시 말한다.
+        print(f"  ⚠ {len(CASES)}건 중 {fell_back}건이 규칙 사전으로 떨어졌습니다.")
+        print("    LLM 점수가 아닙니다. 무료 한도(모델별 일일 요청 수)를 확인하세요.")
+        print()
     print(f"  문장 단위 정확도   {exact}/{len(CASES)}  ({exact / len(CASES):.0%})")
     print(f"  재현율             {recall:.0%}   (잡아야 할 {tp + fn}개 중 {tp}개)")
     print(f"  정밀도             {precision:.0%}   (잡은 {tp + fp}개 중 {tp}개)")

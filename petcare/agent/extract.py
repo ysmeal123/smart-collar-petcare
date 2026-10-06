@@ -134,6 +134,30 @@ NEG_WINDOW = 10
 #: 이 키들의 키워드 목록에는 부정형 표현을 직접 넣어 두었다.
 NEGATION_EXEMPT = frozenset({"stairs_avoid", "weather_cold", "eating_less"})
 
+#: 거부(veto) 전용 어간. **부정 판정에만** 쓴다.
+#:
+#: RULES 의 패턴은 "이게 있으면 증상" 을 잡으려고 길게 적혀 있다.
+#: 그래서 "토는 안 했어요" 를 못 본다 - '토했' 이라는 글자가 없기 때문이다.
+#: 긍정 탐지에는 그게 맞다(짧은 어간으로 잡으면 오탐이 터진다).
+#:
+#: 그런데 **거부는 느슨해도 안전하다.** 빼기만 하고 더하지 않으므로,
+#: 잘못 거부해도 결과는 "평소대로 처방" 이다. 과다 급여로 가지 않는다.
+#: 그래서 여기서는 짧은 어간을 쓴다.
+VETO_STEMS: dict[str, tuple[str, ...]] = {
+    "vomit": ("토", "구토", "설사", "변"),
+    "shampoo_changed": ("샴푸", "목욕제품"),
+    "food_changed": ("사료", "간식"),
+    "env_exposure": ("풀밭", "잔디", "흙", "밖에", "산책"),
+    "skin_visible": ("피부", "털", "붉", "상처", "발진"),
+    "ear_smell": ("냄새",),
+    "ear_discharge": ("귀지", "분비물", "귀"),
+    "recent_bath": ("목욕", "수영", "미용"),
+    "limping": ("절", "다리"),
+    "env_changed": ("이사", "잠자리", "환경"),
+    "noise": ("시끄러", "소리", "소음"),
+    "treats": ("간식",),
+}
+
 
 class Extraction(BaseModel):
     """
@@ -182,6 +206,35 @@ def _split(text: str) -> list[str]:
     return [p.strip() for p in parts if p.strip()]
 
 
+def negated_keys(text: str) -> set[str]:
+    """
+    **명시적으로 부정된** key 들.
+
+    규칙 사전이 키워드는 찾았는데 부정어가 붙어 있던 경우다.
+    "토는 안 했어요" 에서 '토했' 을 보고 vomit 을 떠올렸지만 부정이었던 것.
+
+    LLM 출력을 걸러내는 데 쓴다. 규칙은 재현율이 낮은 대신 **부정 판정은
+    정확하다**(실측 정밀도 100%). LLM 은 반대로 재현율이 높은 대신
+    부정을 가끔 놓친다. 서로의 약점이 겹치지 않으니 합치면 둘 다 얻는다.
+
+    보수적으로 본다. 키워드를 아예 못 찾았으면 아무 말도 하지 않는다 -
+    모르는 표현까지 부정으로 단정하면 LLM 이 제대로 잡은 것을 지운다.
+    """
+    out: set[str] = set()
+    for sentence in _split(text):
+        for key, stems in VETO_STEMS.items():
+            if key in NEGATION_EXEMPT:
+                continue
+            for stem in stems:
+                at = sentence.find(stem)
+                if at < 0:
+                    continue
+                if _negated(sentence, at, len(stem)):
+                    out.add(key)
+                    break
+    return out
+
+
 def extract(text: str) -> Extraction:
     """
     자유 텍스트에서 구조화된 맥락을 뽑는다.
@@ -200,9 +253,17 @@ def extract(text: str) -> Extraction:
 
     llm = extract_llm(text)
     if llm is not None:
-        out.answers = llm
-        out.matched = sorted(llm)
-        out.unmatched = not llm
+        # 규칙이 "이건 부정이다" 라고 본 것은 LLM 이 뭐라 하든 뺀다.
+        #
+        # 실측에서 LLM 이 "토는 안 했어요" 를 vomit 으로 읽었다. 프롬프트에
+        # 그 문장을 예시로 박아뒀는데도 그랬다. 부정 오탐은 제일 나쁜 종류다 -
+        # 보호자가 "안 그랬다" 고 말했는데 그 반대로 처리된다.
+        vetoed = negated_keys(text)
+        answers = {k: v for k, v in llm.items() if k not in vetoed}
+
+        out.answers = answers
+        out.matched = sorted(answers)
+        out.unmatched = not answers
         out.engine = "llm"
         return out
 

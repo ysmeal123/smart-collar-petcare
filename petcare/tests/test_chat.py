@@ -620,3 +620,84 @@ def test_probe_가_설정_누락을_구분한다(monkeypatch):
     monkeypatch.setenv("PEBBLE_LLM_KEY", FAKE_KEY)
     ok, detail = llm_mod.probe()
     assert ok is False and "공급자" in detail
+
+
+# ---------------------------------------------------------------------------
+# 규칙 + LLM 결합
+#
+# 규칙은 재현율이 낮은 대신 부정 판정이 정확하다(실측 정밀도 100%).
+# LLM 은 반대로 재현율이 높은 대신 부정을 가끔 놓친다.
+# 약점이 겹치지 않으니 합치면 둘 다 얻는다.
+# ---------------------------------------------------------------------------
+
+def test_규칙이_부정을_LLM_보다_먼저_본다():
+    """
+    실측에서 LLM 이 "토는 안 했어요" 를 vomit 으로 읽었다.
+    프롬프트에 그 문장을 예시로 박아뒀는데도 그랬다.
+
+    부정 오탐은 제일 나쁜 종류다 - 보호자가 "안 그랬다" 고 말했는데
+    그 반대로 처리된다.
+    """
+    from agent.extract import negated_keys
+
+    assert "vomit" in negated_keys("토는 안 했어요")
+    assert "vomit" in negated_keys("설사는 없었어요")
+    assert "limping" in negated_keys("절지는 않아요")
+    assert "shampoo_changed" in negated_keys("샴푸 바꾼 적 없어요")
+
+
+def test_긍정_보고는_거부하지_않는다():
+    """거부가 과하면 LLM 이 제대로 잡은 것을 지운다."""
+    from agent.extract import negated_keys
+
+    for text in ("어제 토했어요", "풀밭에서 놀았어요", "샴푸를 바꿨어요",
+                 "목욕시켰어요", "다리를 절어요"):
+        assert negated_keys(text) == set(), f"{text!r} 를 부정으로 봤다"
+
+
+def test_한_절의_부정이_다른_절을_오염시키지_않는다():
+    from agent.extract import negated_keys
+
+    got = negated_keys("목욕은 했는데 토는 안 했어요")
+    assert "vomit" in got
+    assert "recent_bath" not in got, "목욕까지 부정으로 봤다"
+
+
+def test_증상이_부정형인_key_는_거부_대상이_아니다():
+    """
+    "계단을 안 올라가요" 는 부정문이지만 증상이다.
+    여기에 거부를 걸면 LLM 이 맞게 잡은 것을 지운다.
+    """
+    from agent.extract import NEGATION_EXEMPT, negated_keys
+
+    assert {"stairs_avoid", "weather_cold", "eating_less"} <= NEGATION_EXEMPT
+    for text in ("계단을 안 올라가요", "밥을 잘 안 먹어요", "산책을 못 했어요"):
+        assert not (negated_keys(text) & NEGATION_EXEMPT)
+
+
+def test_LLM_이_부정을_놓쳐도_규칙이_막는다(monkeypatch):
+    """결합의 핵심. 이게 깨지면 합친 의미가 없다."""
+    monkeypatch.setenv("PEBBLE_LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("PEBBLE_LLM_KEY", FAKE_KEY)
+
+    import agent.llm as llm_mod
+    # LLM 이 부정을 놓치는 상황을 그대로 재현한다
+    monkeypatch.setattr(llm_mod, "_call_gemini", lambda *a, **k: '{"vomit":"yes"}')
+
+    e = extract("토는 안 했어요")
+    assert e.engine == "llm", "LLM 경로를 탔어야 한다"
+    assert "vomit" not in e.answers, "규칙이 막지 못했다"
+
+
+def test_거부가_정상_추출까지_지우지_않는다(monkeypatch):
+    monkeypatch.setenv("PEBBLE_LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("PEBBLE_LLM_KEY", FAKE_KEY)
+
+    import agent.llm as llm_mod
+    monkeypatch.setattr(
+        llm_mod, "_call_gemini",
+        lambda *a, **k: '{"recent_bath":"yes","vomit":"yes"}',
+    )
+
+    e = extract("목욕은 했는데 토는 안 했어요")
+    assert e.answers == {"recent_bath": "yes"}

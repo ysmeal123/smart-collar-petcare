@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 
@@ -73,9 +74,15 @@ MEANING: dict[str, str] = {
     "vomit": "구토나 설사가 있었다",
 }
 
-#: 요청 제한 시간. 짧게 잡는다 — 여기서 막히면 화면이 멈춘다.
-#: 초과하면 규칙 사전으로 떨어진다.
-TIMEOUT_S = 6
+#: 요청 제한 시간.
+#:
+#: 실측 3~5초다(gemini-3.5-flash, 한국어 프롬프트 + JSON 출력).
+#: 6초로 잡았다가 첫 호출이 5.4초에 걸려 타임아웃이 났다. 여유를 둔다.
+#:
+#: 너무 길게 잡아도 안 된다. 여기서 막히는 동안 보호자는 "계획을 다시
+#: 세우고 있어요" 를 보고 있다. 넘기면 규칙 사전으로 떨어지는 편이,
+#: 화면이 멈춰 있는 것보다 낫다.
+TIMEOUT_S = 15
 
 GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
@@ -89,10 +96,13 @@ ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 #: 조용히 규칙 사전으로 떨어져서, "키를 넣었는데 왜 그대로지" 가 된다.
 #: 그래서 `python -m check_llm` 으로 한 번 실제로 찔러보고 확인한다.
 #:
-#: 추출은 단순한 작업이라 제일 작은 모델로 충분하다. 정확도가 아쉬우면
-#: PEBBLE_LLM_MODEL 로 큰 쪽(gemini-3.8-flash)으로 올리면 된다.
+#: 추출은 단순한 작업이라 제일 작은 모델로 충분하다. 실측 1.0초.
+#:
+#: **무료 한도가 모델마다 크게 다르다.** gemini-3.5-flash 는 하루 20건이라
+#: 쓸 수가 없다(실제로 벤치마크 한 번에 소진했다). lite 는 넉넉하다.
+#: 정확도가 아쉬우면 PEBBLE_LLM_MODEL 로 올리되 한도를 먼저 확인하라.
 DEFAULT_MODEL = {
-    "gemini": "gemini-3.5-flash",
+    "gemini": "gemini-3.5-flash-lite",
     "anthropic": "claude-haiku-4-5-20251001",
 }
 
@@ -161,11 +171,32 @@ def sanitize(raw: object) -> dict[str, str]:
     return out
 
 
+#: 다시 걸어볼 만한 상태 코드. 서버가 "지금은 안 되니 나중에" 라고 한 것이다.
+#:
+#: 503 은 모델 과부하다. 실제로 겪었고, 바로 다시 걸면 대개 된다.
+#: 429(할당량)는 넣지 않는다 - 재시도해도 같은 답이 오고 한도만 더 깎인다.
+RETRY_CODES = frozenset({500, 502, 503, 504})
+
+#: 재시도 횟수와 간격. 한 번이면 충분하다.
+#: 여러 번 걸면 보호자가 기다리는 시간만 늘어나고, 어차피 규칙 사전이 받는다.
+RETRIES = 1
+RETRY_WAIT_S = 1.0
+
+
 def _post(url: str, payload: dict, headers: dict) -> dict:
     body = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
-    with urllib.request.urlopen(req, timeout=TIMEOUT_S) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+
+    for attempt in range(RETRIES + 1):
+        req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=TIMEOUT_S) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            if e.code not in RETRY_CODES or attempt == RETRIES:
+                raise
+            time.sleep(RETRY_WAIT_S)
+
+    raise RuntimeError("unreachable")
 
 
 def _call_gemini(prompt: str, key: str) -> str:
@@ -238,6 +269,8 @@ def probe() -> tuple[bool, str]:
             403: "키가 거부됐습니다. 권한이나 API 활성화를 확인하세요",
             404: f"모델을 찾을 수 없습니다: {_model()}",
             429: "할당량을 넘었습니다. 잠시 뒤 다시 시도하세요",
+            500: "서버 오류입니다. 잠시 뒤 다시 시도하세요",
+            503: "모델이 혼잡합니다. 잠시 뒤 다시 시도하세요 (설정 문제 아님)",
         }.get(e.code, "호출이 거부됐습니다")
         return False, f"HTTP {e.code} — {hint}"
     except urllib.error.URLError:
