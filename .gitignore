@@ -34,6 +34,18 @@ htmlcov/
 Thumbs.db
 desktop.ini
 
+# --- 비밀 ---
+#
+# 이 저장소는 Public 이다. API 키가 한 번 커밋되면 지워도 히스토리에 남고,
+# GitHub 에 올라간 키는 봇이 몇 분 안에 긁어간다.
+# 키는 **환경변수로만** 넘긴다. 파일로 둬야 하면 .env 에 두고 여기서 막는다.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets.json
+
 # --- 기타 ---
 *.log
 

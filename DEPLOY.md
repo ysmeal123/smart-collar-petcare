@@ -143,6 +143,56 @@ PEBBLE_LLM_KEY=<API 키>
 PEBBLE_LLM_MODEL=gemini-2.0-flash   # 선택. 비우면 기본값
 ```
 
+### 키를 어디에 두나
+
+> **이 저장소는 Public 이다.** 키가 한 번 커밋되면 지워도 히스토리에 남고,
+> GitHub 에 올라간 키는 봇이 몇 분 안에 긁어간다.
+> **코드에 절대 적지 마라.** 환경변수로만 넘긴다.
+
+**배포(Render)** — Environment 탭에 넣는다. 저장소를 거치지 않는다.
+
+```
+Dashboard → 서비스 선택 → Environment → Add Environment Variable
+→ 저장하면 자동 재배포
+```
+
+**로컬 개발** — 둘 중 하나.
+
+```bash
+# ① 셸에서 (그 터미널에서만 유효. 제일 안전하다)
+export PEBBLE_LLM_PROVIDER=gemini
+export PEBBLE_LLM_KEY=...
+
+# ② .env 파일 (매번 입력하기 번거로우면)
+cp .env.example .env     # 값을 채운다
+```
+
+`.env` 는 `.gitignore` 가 막는다. `.env.example`(값이 빈 보기)만 커밋된다.
+서버가 시작할 때 `.env` 를 자동으로 읽고, **이미 설정된 환경변수는 덮지 않는다** —
+실수로 커밋된 .env 가 프로덕션 키를 덮는 것을 막기 위해서다.
+
+### 키가 새지 않도록 해 둔 것
+
+| | |
+|---|---|
+| URL 이 아니라 **헤더**로 보낸다 | `?key=` 로 보내면 URL 에 키가 박히고, URL 은 예외 메시지·프록시 로그로 샌다 |
+| 예외 **메시지를 안 찍는다** | 타입 이름만 남긴다. HTTP 예외는 요청 정보를 문자열에 담는다 |
+| 시작 로그에 **값이 없다** | `LLM 해석: gemini / gemini-2.0-flash` — 켜졌는지만 말한다 |
+| 응답에 설정이 안 섞인다 | 앱으로 나가는 JSON 에 `engine` 이름만 들어간다 |
+
+테스트가 이걸 지킨다 (`test_시작_로그에_키가_없다` 외 4개).
+
+### 키가 샜다면
+
+1. **먼저 폐기한다.** [AI Studio](https://aistudio.google.com/apikey) 에서 삭제 →
+   새로 발급. 코드를 고치는 것보다 이게 먼저다.
+2. 새 키를 Render Environment 에 넣는다.
+3. 커밋에 들어갔다면 히스토리에서도 지워야 한다. 다만 **이미 공개된 키는
+   지워도 소용없다** — 폐기가 유일한 대응이다.
+
+Gemini 무료 티어 키라 금전 피해는 없지만, 할당량을 남이 쓰면 우리 요청이
+막힌다. 그러면 규칙 사전으로 떨어져서 서비스는 계속 돈다.
+
 | | 키 받는 곳 | 기본 모델 |
 |---|---|---|
 | `gemini` | https://aistudio.google.com/apikey | `gemini-2.0-flash` |

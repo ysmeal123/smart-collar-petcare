@@ -12,6 +12,13 @@ FastAPI 엔드포인트.
 
 from __future__ import annotations
 
+# .env 를 **가장 먼저** 올린다.
+# api.auth 는 import 시점에 os.environ 을 읽으므로, 그 뒤에 로드하면
+# 토큰을 설정했는데도 인증이 꺼진 채로 뜬다.
+from config import load_env
+
+_ENV_FILES = load_env()
+
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
@@ -42,9 +49,13 @@ def _startup() -> None:
     배포 환경에서 인증이 꺼진 채로 떠 있는 것을 눈치채지 못하면
     공개 인터넷에 무방비로 노출된다. 시작할 때 크게 알린다.
     """
+    import config
+
     db.init()
 
     auth = auth_status()
+    for path in _ENV_FILES:
+        print(f"[pebble] .env 읽음: {path}", flush=True)
     print(f"[pebble] 저장소: {backend()}", flush=True)
     if auth["enabled"]:
         print(
@@ -57,6 +68,10 @@ def _startup() -> None:
             "공개 배포라면 PEBBLE_DEVICE_TOKEN / PEBBLE_APP_TOKEN 을 설정하세요.",
             flush=True,
         )
+
+    # 값은 찍지 않는다. 켜졌는지만.
+    for line in config.summary():
+        print(line, flush=True)
 
 
 class PrescribeRequest(BaseModel):

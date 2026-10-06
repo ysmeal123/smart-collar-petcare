@@ -160,9 +160,11 @@ def _post(url: str, payload: dict, headers: dict) -> dict:
 
 
 def _call_gemini(prompt: str, key: str) -> str:
-    url = GEMINI_URL.format(model=_model()) + f"?key={key}"
+    # 키를 **헤더**로 보낸다. ?key= 쿼리로도 되지만 그러면 URL 에 키가 박히고,
+    # URL 은 예외 메시지·스택트레이스·프록시 로그 어디로든 샌다.
+    # 헤더는 그렇게 새지 않는다.
     data = _post(
-        url,
+        GEMINI_URL.format(model=_model()),
         {
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {
@@ -170,7 +172,7 @@ def _call_gemini(prompt: str, key: str) -> str:
                 "temperature": 0,
             },
         },
-        {"Content-Type": "application/json"},
+        {"Content-Type": "application/json", "x-goog-api-key": key},
     )
     return data["candidates"][0]["content"]["parts"][0]["text"]
 
@@ -233,7 +235,14 @@ def extract_llm(text: str) -> dict[str, str] | None:
 
     try:
         raw = caller(build_prompt(text), key)
-    except (urllib.error.URLError, OSError, KeyError, IndexError, ValueError) as e:
+    except Exception as e:
+        # **예외 메시지를 찍지 않는다.** 타입 이름만 남긴다.
+        # HTTP 라이브러리의 예외는 요청 URL·헤더를 문자열에 담는 경우가 있고,
+        # 그게 로그로 나가면 키가 평문으로 남는다.
+        #
+        # Exception 을 통째로 잡는 것도 의도다. 여기서 못 잡은 예외는
+        # FastAPI 가 스택트레이스로 찍는데, 거기에 요청 정보가 섞여 나올 수 있다.
+        # 추출이 실패해도 서비스는 규칙 사전으로 계속 돌아야 한다.
         print(f"[pebble] LLM 추출 실패 ({type(e).__name__}) — 규칙 사전으로 대체합니다")
         return None
 

@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime
 
 import pytest
@@ -465,3 +466,102 @@ def test_해석한_key_가_화면에_노출되지_않는다():
         )
         text = chat_mod.understood(note).text
         assert key not in text, f"{key} 가 화면에 그대로 나온다"
+
+
+# ---------------------------------------------------------------------------
+# 비밀 취급
+#
+# 이 저장소는 Public 이다. 키가 로그·응답·예외 어디로든 새면 안 된다.
+# ---------------------------------------------------------------------------
+
+FAKE_KEY = "AIzaSyFAKE0000000000000000000000000000"
+
+
+def test_시작_로그에_키가_없다(monkeypatch, capsys):
+    monkeypatch.setenv("PEBBLE_LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("PEBBLE_LLM_KEY", FAKE_KEY)
+
+    import config
+    for line in config.summary():
+        print(line)
+
+    out = capsys.readouterr().out
+    assert FAKE_KEY not in out, "시작 로그에 키가 찍힌다"
+    assert "gemini" in out, "켜졌다는 것은 알려야 한다"
+
+
+def test_실패_로그에_키가_없다(monkeypatch, capsys):
+    """
+    HTTP 예외는 요청 URL·헤더를 문자열에 담는 경우가 있다.
+    그걸 그대로 찍으면 키가 평문으로 로그에 남는다.
+    """
+    monkeypatch.setenv("PEBBLE_LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("PEBBLE_LLM_KEY", FAKE_KEY)
+
+    import agent.llm as llm_mod
+
+    def boom(*a, **k):
+        # 실제 urllib 예외가 하는 것처럼 URL 을 메시지에 담는다
+        raise OSError(f"failed: https://example.com/v1?key={FAKE_KEY}")
+
+    monkeypatch.setattr(llm_mod, "_call_gemini", boom)
+
+    assert llm_mod.extract_llm("토했어요") is None
+    out = capsys.readouterr().out
+    assert FAKE_KEY not in out, "예외 메시지로 키가 샜다"
+
+
+def test_키를_URL_이_아니라_헤더로_보낸다(monkeypatch):
+    """
+    ?key= 쿼리로 보내면 URL 에 키가 박히고, URL 은 예외 메시지·
+    프록시 로그·스택트레이스 어디로든 샌다.
+    """
+    monkeypatch.setenv("PEBBLE_LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("PEBBLE_LLM_KEY", FAKE_KEY)
+
+    seen = {}
+
+    import agent.llm as llm_mod
+
+    def fake_post(url, payload, headers):
+        seen["url"] = url
+        seen["headers"] = headers
+        return {"candidates": [{"content": {"parts": [{"text": "{}"}]}}]}
+
+    monkeypatch.setattr(llm_mod, "_post", fake_post)
+    llm_mod.extract_llm("토했어요")
+
+    assert FAKE_KEY not in seen["url"], "URL 에 키가 들어갔다"
+    assert seen["headers"].get("x-goog-api-key") == FAKE_KEY
+
+
+def test_응답에_키가_섞이지_않는다(monkeypatch):
+    """앱으로 나가는 응답에 설정값이 새면 안 된다."""
+    monkeypatch.setenv("PEBBLE_LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("PEBBLE_LLM_KEY", FAKE_KEY)
+
+    import agent.llm as llm_mod
+    monkeypatch.setattr(llm_mod, "_call_gemini", lambda *a, **k: '{"vomit":"yes"}')
+
+    e = extract("토했어요")
+    assert FAKE_KEY not in e.model_dump_json()
+
+
+def test_env_가_기존_값을_덮지_않는다(tmp_path, monkeypatch):
+    """
+    배포 환경에는 진짜 값이 이미 들어와 있다. 실수로 커밋된 .env 가
+    그걸 덮으면 프로덕션이 개발 키로 돈다.
+    """
+    import config
+
+    env = tmp_path / ".env"
+    env.write_text("PEBBLE_LLM_KEY=from_file\n", encoding="utf-8")
+    monkeypatch.setattr(config, "ENV_PATHS", [env])
+
+    monkeypatch.setenv("PEBBLE_LLM_KEY", "from_environment")
+    config.load_env()
+    assert os.environ["PEBBLE_LLM_KEY"] == "from_environment"
+
+    monkeypatch.delenv("PEBBLE_LLM_KEY")
+    config.load_env()
+    assert os.environ["PEBBLE_LLM_KEY"] == "from_file"
