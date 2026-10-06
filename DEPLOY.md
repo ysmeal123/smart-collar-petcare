@@ -140,8 +140,18 @@ LLM        아무 문장이나 알아듣는다. 키가 필요하다
 ```bash
 PEBBLE_LLM_PROVIDER=gemini          # 또는 anthropic
 PEBBLE_LLM_KEY=<API 키>
-PEBBLE_LLM_MODEL=gemini-2.0-flash   # 선택. 비우면 기본값
+PEBBLE_LLM_MODEL=                   # 비워두면 기본값. 보통 손댈 일 없다
 ```
+
+넣은 뒤 **반드시 한 번 확인한다.**
+
+```bash
+cd petcare && python -m check_llm
+```
+
+실제로 한 번 호출해서 되는지 본다. 평소 동작은 실패해도 조용히 규칙
+사전으로 떨어지는데, 그게 설정이 틀렸을 때도 똑같이 조용하다.
+여기서만 시끄럽게 말한다.
 
 ### 키를 어디에 두나
 
@@ -195,8 +205,14 @@ Gemini 무료 티어 키라 금전 피해는 없지만, 할당량을 남이 쓰�
 
 | | 키 받는 곳 | 기본 모델 |
 |---|---|---|
-| `gemini` | https://aistudio.google.com/apikey | `gemini-2.0-flash` |
+| `gemini` | https://aistudio.google.com/apikey | `gemini-3.5-flash` |
 | `anthropic` | https://console.anthropic.com | `claude-haiku-4-5-20251001` |
+
+> **모델 이름은 종종 종료된다.** 기본값을 `gemini-2.0-flash` 로 뒀다가
+> 종료된 것을 뒤늦게 알았다. 그 상태로 키를 넣으면 호출이 실패하고
+> 조용히 규칙 사전으로 떨어져서 원인을 알 수 없다.
+> `check_llm` 이 그걸 잡아준다. 최신 목록은
+> [Gemini 모델 문서](https://ai.google.dev/gemini-api/docs/models) 참조.
 
 Render 에 넣으려면 **Environment** 탭에 추가하고 재배포하면 된다.
 로컬은 그냥 셸에서 내보낸다.

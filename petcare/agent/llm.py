@@ -82,8 +82,17 @@ GEMINI_URL = (
 )
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 
+#: 기본 모델.
+#:
+#: **모델 이름은 생각보다 자주 죽는다.** gemini-2.0-flash 를 기본값으로
+#: 뒀다가 종료된 것을 뒤늦게 알았다. 그 상태로 키를 넣으면 호출이 실패하고
+#: 조용히 규칙 사전으로 떨어져서, "키를 넣었는데 왜 그대로지" 가 된다.
+#: 그래서 `python -m check_llm` 으로 한 번 실제로 찔러보고 확인한다.
+#:
+#: 추출은 단순한 작업이라 제일 작은 모델로 충분하다. 정확도가 아쉬우면
+#: PEBBLE_LLM_MODEL 로 큰 쪽(gemini-3.8-flash)으로 올리면 된다.
 DEFAULT_MODEL = {
-    "gemini": "gemini-2.0-flash",
+    "gemini": "gemini-3.5-flash",
     "anthropic": "claude-haiku-4-5-20251001",
 }
 
@@ -193,6 +202,52 @@ def _call_anthropic(prompt: str, key: str) -> str:
         },
     )
     return data["content"][0]["text"]
+
+
+def probe() -> tuple[bool, str]:
+    """
+    실제로 한 번 호출해서 설정이 맞는지 본다.
+
+    **조용한 폴백이 좋기만 한 건 아니다.** 서비스가 안 멈추는 건 맞지만,
+    설정이 틀렸을 때도 똑같이 조용해서 알아챌 방법이 없다.
+    그래서 "지금 확인한다"는 경로를 따로 둔다.
+
+    HTTP 상태 코드로 원인을 가른다. 코드 자체는 비밀이 아니다 -
+    **응답 본문과 URL 은 여전히 찍지 않는다.**
+
+    반환: (성공 여부, 사람이 읽을 설명)
+    """
+    if not _provider():
+        return False, "PEBBLE_LLM_PROVIDER 가 비어 있습니다 (gemini 또는 anthropic)"
+    if not os.environ.get("PEBBLE_LLM_KEY", "").strip():
+        return False, "PEBBLE_LLM_KEY 가 비어 있습니다"
+
+    caller = {"gemini": _call_gemini, "anthropic": _call_anthropic}.get(_provider())
+    if caller is None:
+        return False, f"모르는 공급자입니다: {_provider()} (gemini 또는 anthropic)"
+
+    key = os.environ["PEBBLE_LLM_KEY"].strip()
+    try:
+        raw = caller("토했어요", key)
+    except urllib.error.HTTPError as e:
+        # Gemini 는 키가 잘못돼도 401 이 아니라 400 을 준다.
+        # 둘 다 짚어줘야 엉뚱한 곳을 고치지 않는다.
+        hint = {
+            400: "키가 잘못됐거나 모델 이름이 틀렸습니다",
+            401: "키가 잘못됐습니다",
+            403: "키가 거부됐습니다. 권한이나 API 활성화를 확인하세요",
+            404: f"모델을 찾을 수 없습니다: {_model()}",
+            429: "할당량을 넘었습니다. 잠시 뒤 다시 시도하세요",
+        }.get(e.code, "호출이 거부됐습니다")
+        return False, f"HTTP {e.code} — {hint}"
+    except urllib.error.URLError:
+        return False, "네트워크에 연결하지 못했습니다"
+    except Exception as e:
+        return False, f"호출 실패 ({type(e).__name__})"
+
+    if _parse(raw) is None:
+        return False, "응답을 JSON 으로 읽지 못했습니다"
+    return True, f"{_provider()} / {_model()} 정상"
 
 
 def _parse(text: str) -> object:

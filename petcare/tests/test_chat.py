@@ -565,3 +565,58 @@ def test_env_가_기존_값을_덮지_않는다(tmp_path, monkeypatch):
     monkeypatch.delenv("PEBBLE_LLM_KEY")
     config.load_env()
     assert os.environ["PEBBLE_LLM_KEY"] == "from_file"
+
+
+def test_기본_모델이_살아있는_이름이다():
+    """
+    모델 이름은 생각보다 자주 죽는다. gemini-2.0-flash 를 기본값으로 뒀다가
+    종료된 것을 뒤늦게 알았다 - 키를 넣어도 호출이 실패하고 조용히 규칙
+    사전으로 떨어져서, "키를 넣었는데 왜 그대로지" 가 된다.
+
+    이름까지 검증할 수는 없지만(호출해야 안다), 죽은 것으로 확인된 이름이
+    다시 들어오는 것은 막는다. python -m check_llm 이 실물 확인을 맡는다.
+    """
+    from agent.llm import DEFAULT_MODEL
+
+    retired = {"gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro",
+               "gemini-pro", "claude-3-haiku-20240307"}
+    for provider, model in DEFAULT_MODEL.items():
+        assert model not in retired, f"{provider} 기본 모델이 종료된 이름이다: {model}"
+        assert model, f"{provider} 기본 모델이 비어 있다"
+
+
+def test_probe_가_키를_흘리지_않는다(monkeypatch, capsys):
+    """진단은 시끄러워야 하지만, 키까지 떠들면 안 된다."""
+    monkeypatch.setenv("PEBBLE_LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("PEBBLE_LLM_KEY", FAKE_KEY)
+
+    import agent.llm as llm_mod
+
+    def boom(*a, **k):
+        raise OSError(f"https://x/v1?key={FAKE_KEY}")
+
+    monkeypatch.setattr(llm_mod, "_call_gemini", boom)
+
+    ok, detail = llm_mod.probe()
+    assert ok is False
+    assert FAKE_KEY not in detail, "진단 메시지로 키가 샜다"
+    assert FAKE_KEY not in capsys.readouterr().out
+
+
+def test_probe_가_설정_누락을_구분한다(monkeypatch):
+    monkeypatch.delenv("PEBBLE_LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("PEBBLE_LLM_KEY", raising=False)
+
+    import agent.llm as llm_mod
+
+    ok, detail = llm_mod.probe()
+    assert ok is False and "PROVIDER" in detail
+
+    monkeypatch.setenv("PEBBLE_LLM_PROVIDER", "gemini")
+    ok, detail = llm_mod.probe()
+    assert ok is False and "KEY" in detail
+
+    monkeypatch.setenv("PEBBLE_LLM_PROVIDER", "openai")
+    monkeypatch.setenv("PEBBLE_LLM_KEY", FAKE_KEY)
+    ok, detail = llm_mod.probe()
+    assert ok is False and "공급자" in detail
