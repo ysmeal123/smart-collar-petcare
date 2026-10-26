@@ -127,16 +127,25 @@ def _seed_if_asked() -> None:
     서버가 안 뜨면 고칠 방법이 없다.
     """
     import os
+    import traceback
 
-    if os.environ.get("PEBBLE_SEED", "").strip() not in ("1", "true", "yes"):
+    raw = os.environ.get("PEBBLE_SEED", "").strip()
+    if raw.lower() not in ("1", "true", "yes"):
+        # 켜졌는지 **항상** 말한다. 안 그러면 "시드가 안 됐는데 왜인지
+        # 모르겠다" 가 된다 - 변수를 안 넣은 건지, 넣었는데 실패한 건지,
+        # 이미 데이터가 있어서 건너뛴 건지 구분이 안 간다.
+        print(f"[pebble] 시드: 꺼짐 (PEBBLE_SEED={raw!r})", flush=True)
         return
 
+    print("[pebble] 시드: 켜짐 — 비어 있으면 시연 데이터를 넣습니다", flush=True)
     try:
         from seed_remote import main as seed
         seed()
     except Exception as e:                                   # noqa: BLE001
-        print(f"[pebble] ⚠ 시드 실패 ({type(e).__name__}: {e}) — 서버는 계속 뜹니다",
-              flush=True)
+        # 전체 스택을 찍는다. 한 줄 요약으로는 어느 쿼리에서 깨졌는지 모른다.
+        print(f"[pebble] ⚠ 시드 실패 ({type(e).__name__}: {e})", flush=True)
+        traceback.print_exc()
+        print("[pebble]   서버는 계속 뜹니다. 데이터만 비어 있습니다.", flush=True)
 
 
 class PrescribeRequest(BaseModel):
