@@ -95,8 +95,74 @@ void printMenu() {
   Serial.println("  s  속도 바꾸기 (느린 쪽부터 순환)");
   Serial.println("  a  모든 속도로 한 바퀴씩 — 어디서 도는지 찾기");
   Serial.println("  t  EN 을 켜고 끄기만 (모터 잠김 확인)");
+  Serial.println("  m  30초간 25Hz 로 계속 펄스 (멀티미터 측정용)");
   Serial.println("-----------------------------------------");
   Serial.print("> ");
+}
+
+
+/**
+ * 30초간 느리게 계속 펄스를 보낸다. **멀티미터로 재보기 위한 모드다.**
+ *
+ * 모터가 안 돌 때, 신호가 정말 드라이버 핀까지 가는지를 눈이 아니라
+ * 숫자로 확인해야 한다. 25Hz 듀티 50% 면 DC 전압계에 평균값이 뜬다.
+ *
+ *     STEP  약 1.6V   (3.3V 의 절반)  <- 펄스가 오고 있다
+ *     STEP  0V 또는 3.3V             <- 신호가 안 온다. 배선·핀 확인
+ *     EN    약 0V                     <- 활성화됨 (LOW 가 활성)
+ *     EN    3.3V                      <- 꺼져 있다
+ *     RST   3.3V, SLP 3.3V            <- 깨어 있다. 0V 면 드라이버가 잠김
+ */
+void measureMode() {
+  Serial.println();
+  Serial.println("  30초간 25Hz 로 펄스를 보냅니다. 드라이버 핀에서 재보세요.");
+  Serial.println();
+  Serial.println("    STEP  약 1.6V 여야 합니다 (3.3V 의 절반)");
+  Serial.println("    EN    약 0V   여야 합니다 (LOW 가 활성)");
+  Serial.println("    RST   3.3V, SLP 3.3V 여야 합니다");
+  Serial.println();
+  Serial.println("  검정 프로브는 드라이버의 GND 에 둡니다.");
+
+  digitalWrite(DIR_PIN, LOW);
+  digitalWrite(EN_PIN, EN_ACTIVE);
+
+  unsigned long end = millis() + 30000;
+  int left = 30;
+  while (millis() < end) {
+    digitalWrite(STEP_PIN, HIGH);
+    waitUs(20000);
+    digitalWrite(STEP_PIN, LOW);
+    waitUs(20000);
+    int now = (int)((end - millis()) / 1000) + 1;
+    if (now != left) { left = now; Serial.printf("    %d\n", left); }
+  }
+
+  digitalWrite(EN_PIN, EN_INACTIVE);
+  Serial.println("  끝났습니다.");
+}
+
+
+/**
+ * 기다린다. **긴 대기는 스케줄러에 양보한다.**
+ *
+ * `delayMicroseconds()` 는 CPU 를 붙잡고 바쁘게 도는 busy-wait 다.
+ * 느린 속도(20000us)로 200펄스를 보내면 8초를 그렇게 버티는데,
+ * 그 사이 IDLE 태스크가 한 번도 못 돌아 워치독이 보드를 리셋한다.
+ *
+ *     rst:0x4 (OWDT_RESET)
+ *
+ * 리눅스에서는 OS 가 알아서 했던 일이다. 여기서는 직접 해줘야 한다.
+ * `delay()` 는 vTaskDelay 라서 양보하고, 그동안 워치독이 먹는다.
+ *
+ * 1ms 미만은 그냥 busy-wait 한다. 그 정도로는 굶지 않고,
+ * 빠른 속도에서는 `delay()` 의 1ms 해상도가 오히려 타이밍을 망친다.
+ */
+static void waitUs(unsigned long us) {
+  if (us >= 1000) {
+    delay(us / 1000);
+    us %= 1000;
+  }
+  if (us) delayMicroseconds(us);
 }
 
 
@@ -109,9 +175,10 @@ void turn(int steps, bool reverse, unsigned long us) {
   unsigned long t0 = millis();
   for (int i = 0; i < steps; i++) {
     digitalWrite(STEP_PIN, HIGH);
-    delayMicroseconds(us);
+    waitUs(us);
     digitalWrite(STEP_PIN, LOW);
-    delayMicroseconds(us);
+    waitUs(us);
+    if ((i & 0x1F) == 0) yield();  // 빠른 속도에서도 숨 쉴 틈을 준다
   }
   unsigned long dt = millis() - t0;
 
@@ -151,9 +218,12 @@ void sweep() {
  */
 void toggleEnable() {
   Serial.println();
-  Serial.println("  EN 을 3초간 내립니다. 손으로 축을 돌려보세요.");
+  Serial.println("  EN 을 10초간 내립니다. 손으로 축을 돌려보세요.");
   digitalWrite(EN_PIN, EN_ACTIVE);
-  delay(3000);
+  for (int s = 10; s > 0; s--) {
+    Serial.printf("    %d\n", s);
+    delay(1000);
+  }
   digitalWrite(EN_PIN, EN_INACTIVE);
   Serial.println("  EN 을 올렸습니다. 이제 헐거워야 합니다.");
   Serial.println();
@@ -175,6 +245,7 @@ void loop() {
     case '3': turn(20,            false, pulseUs); break;
     case 'a': sweep(); break;
     case 't': toggleEnable(); break;
+    case 'm': measureMode(); break;
     case 's': {
       int i = 0;
       while (i < N_SPEEDS && SPEEDS_US[i] != pulseUs) i++;
