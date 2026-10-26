@@ -140,6 +140,33 @@ class Conn:
         self._raw.close()
 
 
+def add_column(conn: "Conn", table: str, column: str, decl: str) -> None:
+    """
+    컬럼이 없으면 추가한다. **있으면 조용히 넘어간다.**
+
+    `try: ALTER ... except: pass` 로 하면 안 된다.
+    SQLite 에서는 실패한 문장 하나가 무해하지만, **Postgres 는 문장 하나가
+    실패하면 트랜잭션 전체가 중단된다.** 그 뒤의 commit() 이 롤백이 되어
+    같은 트랜잭션에서 만든 테이블까지 전부 날아간다.
+
+    예외를 삼키면 로그에도 안 남아서, 서버는 멀쩡히 뜨는데 테이블이 없는
+    상태가 된다. 실제로 첫 배포에서 이걸로 모든 읽기가 500 이 났다.
+
+        psycopg.errors.UndefinedTable: relation "dogs" does not exist
+
+    그래서 방언별로 "실패하지 않는 방법" 을 쓴다.
+    """
+    if is_postgres():
+        # PG 9.6+ 는 IF NOT EXISTS 를 지원한다. 애초에 실패하지 않는다.
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {decl}")
+        return
+
+    # SQLite 는 ADD COLUMN 에 IF NOT EXISTS 가 없다. 먼저 물어본다.
+    cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+
+
 @contextmanager
 def connect(path: Path | str | None = None) -> Iterator[Conn]:
     """

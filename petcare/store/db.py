@@ -24,7 +24,14 @@ import json
 from datetime import date, datetime
 from pathlib import Path
 
-from store.dialect import DEFAULT_SQLITE, Conn, backend, connect, is_postgres
+from store.dialect import (
+    DEFAULT_SQLITE,
+    Conn,
+    add_column,
+    backend,
+    connect,
+    is_postgres,
+)
 
 DB_PATH = DEFAULT_SQLITE
 
@@ -191,10 +198,7 @@ def init(path: Path | str | None = None) -> None:
     with connect(path) as c:
         c.executescript(SCHEMA)
         for table, column, decl in LATE_COLUMNS:
-            try:
-                c.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
-            except Exception:
-                pass          # 이미 있다
+            add_column(c, table, column, decl)
 
 
 # ---------------------------------------------------------------------------

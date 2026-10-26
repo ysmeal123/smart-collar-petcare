@@ -348,3 +348,75 @@ def test_뒤늦게_온_데이터가_그_날짜에_반영된다(conn):
     full = pipeline.rollup(conn, COLLAR, day)
     assert full.summary.scratch_total > partial.summary.scratch_total
     assert full.summary.scratch_total == ds.days[-1].summary.scratch_total
+
+
+# ---------------------------------------------------------------------------
+# 스키마 초기화
+#
+# 첫 배포에서 모든 읽기가 500 이 났다. db.init() 안의 ALTER TABLE 이
+# "이미 있음" 으로 실패했는데, Postgres 는 문장 하나가 실패하면 트랜잭션
+# 전체가 중단된다. 뒤따른 commit() 이 롤백이 되어 CREATE TABLE 까지 날아갔다.
+#
+#     psycopg.errors.UndefinedTable: relation "dogs" does not exist
+#
+# 예외를 삼켰으니 로그에도 안 남고 서버는 멀쩡히 떴다. 제일 찾기 어려운 종류다.
+# ---------------------------------------------------------------------------
+
+def test_init_을_여러_번_해도_표가_남는다(tmp_path):
+    """
+    두 번째 init 에서 ALTER 가 실패하면 첫 번째가 만든 표까지 날아간다.
+    SQLite 에서는 안 나지만 Postgres 에서는 난다.
+    """
+    from store import db
+    from store.dialect import DEFAULT_SQLITE
+
+    path = tmp_path / "s.db"
+    for _ in range(3):
+        db.init(path)
+
+    with db.connect(path) as c:
+        names = {
+            r["name"] for r in c.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+    assert "dogs" in names, "init 을 반복하자 표가 사라졌다"
+    assert "guardian_notes" in names
+
+
+def test_나중에_추가된_컬럼이_살아있다(tmp_path):
+    from store import db
+
+    path = tmp_path / "s.db"
+    db.init(path)
+    db.init(path)          # 두 번째에 ALTER 가 중복된다
+
+    with db.connect(path) as c:
+        cols = {
+            r["name"]
+            for r in c.execute("PRAGMA table_info(guardian_notes)").fetchall()
+        }
+    assert "engine" in cols
+
+
+def test_컬럼_추가가_예외를_삼키지_않는다():
+    """
+    **예외를 삼키면 안 된다.** Postgres 에서는 그 순간 트랜잭션이 죽고,
+    죽은 사실이 로그에도 안 남는다.
+
+    방언별로 '애초에 실패하지 않는 방법' 을 써야 한다.
+    """
+    import ast
+    import inspect
+    from store import dialect
+
+    src = inspect.getsource(dialect.add_column)
+
+    # 독스트링에는 "except 로 하면 안 된다" 는 설명이 들어 있다.
+    # 문자열이 아니라 **실제 코드**에 예외 처리가 있는지를 본다.
+    fn = ast.parse(src.lstrip()).body[0]
+    handlers = [n for n in ast.walk(fn) if isinstance(n, ast.ExceptHandler)]
+    assert not handlers, "예외를 삼키는 방식으로 되돌아갔다"
+
+    assert "IF NOT EXISTS" in src, "Postgres 경로가 사라졌다"
+    assert "table_info" in src, "SQLite 경로가 사라졌다"
