@@ -29,6 +29,7 @@ from gateway.client import (
     Client,
     ClockNotReady,
     ServerDown,
+    Unauthorized,
     clock_is_trustworthy,
 )
 from gateway.config import CONFIG, Config
@@ -100,6 +101,12 @@ class Agent:
             except ClockNotReady as e:
                 log(f"업로드 보류 — {e}")
                 return
+            except Unauthorized as e:
+                # 재시도해도 영원히 실패한다. 버리지도 않는다 -
+                # 토큰을 고치면 그대로 올라가야 할 멀쩡한 데이터다.
+                log(f"⚠ 인증 실패 — {e}")
+                log("  데이터는 버퍼에 보관합니다. 토큰을 고치면 올라갑니다.")
+                return
             except ServerDown as e:
                 log(f"서버 연결 실패 — 버퍼에 유지 ({e})")
                 return
@@ -138,11 +145,14 @@ class Agent:
             try:
                 self.client.ack(c["id"], c["state"], c["result"])
                 self.buffer.forget(c["id"])
-            except ServerDown:
+            except (ServerDown, Unauthorized):
                 return
 
         try:
             commands = self.client.fetch_commands()
+        except Unauthorized as e:
+            log(f"⚠ 인증 실패 — {e}")
+            return
         except ServerDown as e:
             log(f"명령 조회 실패 — 캐시된 계획으로 계속 ({e})")
             return
@@ -236,6 +246,18 @@ class Agent:
         log(f"게이트웨이 시작 — 목줄 {self.cfg.collar_serial} / 개체 {self.cfg.dog_id}")
         log(f"시계: {why}")
         log(f"서버: {self.cfg.server} ({'연결됨' if self.client.health() else '응답 없음'})")
+        log(f"기기 토큰: {'설정됨' if self.cfg.token else '없음'}")
+
+        # 한 번 찔러보고 바로 말한다. 60초 뒤에 "명령 조회 실패" 를 보고
+        # 원인을 찾게 하면 반나절을 잃는다.
+        try:
+            self.client.fetch_commands()
+        except Unauthorized as exc:
+            log(f"⚠ {exc}")
+            log("  PEBBLE_TOKEN 환경변수를 설정하고 다시 시작하세요.")
+            log("  서버 Environment 탭의 PEBBLE_DEVICE_TOKEN 값입니다.")
+        except Exception:
+            pass          # 서버가 아직 안 떴을 수도 있다. 루프가 재시도한다
         if e or s:
             log(f"미전송 버퍼 이벤트 {e}건 · 표본 {s}건")
 

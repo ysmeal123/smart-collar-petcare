@@ -243,6 +243,40 @@ PEBBLE_STEPS_PER_GRAM=7
 **이걸 안 하면 "오메가3 4알" 이 실제로는 2알이거나 9알이 된다.**
 안내서도 같은 경고를 한다 — *"배출량은 회전각과 항상 1대1로 대응하지 않는다."*
 
+### 서버에 붙이기
+
+파이는 **공인 IP 가 없다.** 공유기 뒤에 있어서 서버가 밀어 넣을 수 없다.
+그래서 파이가 **나가서 가지러 온다** — 나가는 연결은 어느 공유기에서나 된다.
+
+```
+60초마다
+  ① 밀린 실행 보고 올림   POST /v1/feeder/commands/{id}/ack
+  ② 새 명령 가져옴        GET  /v1/feeder/{dog}/commands
+  ③ 로컬 DB 에 저장
+  ④ 시각이 된 명령 실행
+```
+
+①이 먼저인 게 중요하다. 서버가 "명령 vs 실제 실행" 을 대조하지 못하면
+섭취량 계산이 틀어지고 긴급정지 규칙이 영영 발동하지 않는다.
+
+```bash
+export PEBBLE_SERVER=https://pebble-api-xxxx.onrender.com
+export PEBBLE_TOKEN=<서버의 PEBBLE_DEVICE_TOKEN 과 같은 값>
+export PEBBLE_DOG=dog_choco
+export PEBBLE_COLLAR=PBL-0001
+```
+
+서버 쪽에 파이를 등록하거나 IP 를 알려줄 필요가 없다.
+
+**토큰이 틀리면 시작하자마자 말해준다.**
+
+```
+⚠ HTTP 401 — PEBBLE_TOKEN 을 확인하세요.
+  PEBBLE_TOKEN 환경변수를 설정하고 다시 시작하세요.
+```
+
+인증 실패로 못 올린 데이터는 **버리지 않는다.** 토큰을 고치면 그대로 올라간다.
+
 ### 실행
 
 ```bash

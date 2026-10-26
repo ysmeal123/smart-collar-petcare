@@ -512,3 +512,110 @@ def test_핀_배치가_안내서와_같다():
     # I²C(물리 3·5 = GPIO2·3)와 겹치면 로드셀이 죽는다
     used = {p for pins in PINS.values() for p in pins}
     assert not (used & {2, 3}), "I²C 핀을 모터에 배정했다"
+
+
+# ---------------------------------------------------------------------------
+# 기기 인증
+#
+# 서버에만 인증을 걸고 게이트웨이를 안 고치면 배포 직후 전부 401 이 된다.
+# 한쪽만 구현된 상태를 테스트로 막는다.
+# ---------------------------------------------------------------------------
+
+def test_모든_호출에_토큰이_실린다(monkeypatch):
+    """
+    하나라도 빠지면 그 경로만 401 이 나고, 증상이 간헐적으로 보여
+    원인을 찾기 어렵다.
+    """
+    from gateway import client as cl
+    from gateway.config import Config
+
+    seen: list[dict] = []
+
+    def fake(url, payload, timeout, method="POST", token=""):
+        seen.append({"url": url, "token": token})
+        return {"commands": []}
+
+    monkeypatch.setattr(cl, "_request", fake)
+    monkeypatch.setattr(cl, "clock_is_trustworthy", lambda: (True, "ok"))
+
+    cfg = Config(server="http://x", token="SECRET")
+    c = cl.Client(cfg)
+
+    c.fetch_commands()
+    c.ack("cmd-1", "done")
+    c.send_weight([{"started_at": "2026-01-01T00:00:00", "samples_kg": [5.0]}])
+
+    assert seen, "호출이 하나도 안 잡혔다"
+    for call in seen:
+        assert call["token"] == "SECRET", f"토큰 없이 호출: {call['url']}"
+
+
+def test_401은_서버다운과_구분된다(monkeypatch):
+    """
+    둘을 섞으면 "서버가 가끔 안 되네" 로 보이고 며칠을 잃는다.
+    인증은 재시도해도 영원히 실패하므로 설정 문제라고 말해야 한다.
+    """
+    import urllib.error
+    from gateway import client as cl
+
+    def boom(*a, **k):
+        raise urllib.error.HTTPError("u", 401, "Unauthorized", {}, None)
+
+    monkeypatch.setattr(cl.urllib.request, "urlopen", boom)
+
+    with pytest.raises(cl.Unauthorized) as e:
+        cl._request("http://x", None, 1, method="GET", token="WRONG")
+    assert "PEBBLE_TOKEN" in str(e.value)
+
+
+def test_인증_실패시_데이터를_버리지_않는다(buf, monkeypatch):
+    """
+    BadPayload 는 버려야 하지만 Unauthorized 는 아니다.
+    토큰을 고치면 그대로 올라가야 할 멀쩡한 데이터다.
+    """
+    from gateway import client as cl
+
+    buf.add_events(7, [{"seq": 1, "t_ms": 100, "type": "scratch",
+                        "conf": 0.9, "dur_s": 2.0}])
+    before, _ = buf.pending()
+    assert before > 0
+
+    class Boom:
+        def upload(self, batch):
+            raise cl.Unauthorized("HTTP 401 — PEBBLE_TOKEN 을 확인하세요")
+        def send_weight(self, s):
+            raise cl.Unauthorized("x")
+
+    from gateway.agent import Agent
+    from gateway.hardware import MockCollar, MockDispenser, MockScale
+
+    agent = Agent(Config(server="http://127.0.0.1:1"),
+                  MockCollar(), MockDispenser(), MockScale())
+    agent.buffer = buf
+    agent.client = Boom()
+    agent.upload()
+
+    after, _ = buf.pending()
+    assert after == before, "인증 실패인데 데이터를 버렸다"
+
+
+def test_토큰이_없으면_헤더를_안_붙인다(monkeypatch):
+    """로컬 개발 서버는 인증이 꺼져 있다. 빈 토큰으로도 돌아야 한다."""
+    from gateway import client as cl
+
+    captured = {}
+
+    class FakeResp:
+        def read(self): return b"{}"
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def fake_urlopen(req, timeout=None):
+        captured["headers"] = dict(req.headers)
+        return FakeResp()
+
+    monkeypatch.setattr(cl.urllib.request, "urlopen", fake_urlopen)
+    cl._request("http://x", None, 1, method="GET", token="")
+
+    keys = {k.lower() for k in captured["headers"]}
+    assert "authorization" not in keys

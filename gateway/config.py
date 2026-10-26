@@ -25,6 +25,12 @@ class Config:
     timeout_sec: int = field(default_factory=lambda: _int("PEBBLE_TIMEOUT", 10))
 
     # --- 기기 식별 ---
+    #: 기기 토큰. 서버의 PEBBLE_DEVICE_TOKEN 과 같은 값을 넣는다.
+    #:
+    #: 비워두면 헤더를 안 붙인다 - 로컬 개발 서버는 인증이 꺼져 있다.
+    #: **배포 서버에서는 반드시 필요하다.** 없으면 전부 401 이다.
+    token: str = field(default_factory=lambda: _env("PEBBLE_TOKEN", ""))
+
     collar_serial: str = field(default_factory=lambda: _env("PEBBLE_COLLAR", "PBL-0001"))
     dog_id: str = field(default_factory=lambda: _env("PEBBLE_DOG", "dog_choco"))
     fw_version: str = field(default_factory=lambda: _env("PEBBLE_FW", "0.1.0"))

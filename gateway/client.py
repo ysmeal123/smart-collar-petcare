@@ -87,9 +87,24 @@ def clock_is_trustworthy() -> tuple[bool, str]:
     return True, "시계 확인 생략 (systemd 아님)"
 
 
-def _request(url: str, payload: dict | None, timeout: int, method: str = "POST") -> dict:
+class Unauthorized(Exception):
+    """
+    토큰이 없거나 틀렸다.
+
+    ServerDown 과 구분한다. 재시도해도 영원히 실패하므로 조용히 쌓아두면
+    안 된다. 설정 문제라고 분명히 말해야 한다 - 안 그러면 "서버가 가끔
+    안 되네" 로 보이고 며칠을 잃는다.
+    """
+
+
+def _request(
+    url: str, payload: dict | None, timeout: int,
+    method: str = "POST", token: str = "",
+) -> dict:
     data = None
     headers = {"Accept": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     if payload is not None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         headers["Content-Type"] = "application/json"
@@ -101,6 +116,12 @@ def _request(url: str, payload: dict | None, timeout: int, method: str = "POST")
             return json.loads(body) if body else {}
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "replace")[:400]
+        # 인증 실패는 데이터 문제가 아니라 설정 문제다. 따로 가른다.
+        if e.code in (401, 403):
+            raise Unauthorized(
+                f"HTTP {e.code} — PEBBLE_TOKEN 을 확인하세요. "
+                f"서버의 PEBBLE_DEVICE_TOKEN 과 같아야 합니다."
+            ) from e
         # 408(타임아웃)과 429(과부하)는 기다리면 되는 것이라 재시도 대상이다.
         if 400 <= e.code < 500 and e.code not in (408, 429):
             raise BadPayload(f"HTTP {e.code}: {detail}") from e
@@ -135,13 +156,14 @@ class Client:
             "events": batch.events,
             "status": batch.status,
         }
-        return _request(self.cfg.url("/v1/ingest"), payload, self.cfg.timeout_sec)
+        return _request(self.cfg.url("/v1/ingest"), payload,
+                        self.cfg.timeout_sec, token=self.cfg.token)
 
     def send_weight(self, sessions: list[dict]) -> dict:
         """급식판 체중계 세션."""
         return _request(
             self.cfg.url(f"/v1/feeder/{self.cfg.dog_id}/weight"),
-            {"sessions": sessions}, self.cfg.timeout_sec,
+            {"sessions": sessions}, self.cfg.timeout_sec, token=self.cfg.token,
         )
 
     # -- 사출 명령 ----------------------------------------------------------
@@ -149,7 +171,7 @@ class Client:
     def fetch_commands(self) -> list[dict]:
         r = _request(
             self.cfg.url(f"/v1/feeder/{self.cfg.dog_id}/commands"),
-            None, self.cfg.timeout_sec, method="GET",
+            None, self.cfg.timeout_sec, method="GET", token=self.cfg.token,
         )
         return r.get("commands", [])
 
@@ -159,7 +181,7 @@ class Client:
         qs = urlencode({"state": state, "result": result})
         return _request(
             self.cfg.url(f"/v1/feeder/commands/{quote(cmd_id, safe='')}/ack?{qs}"),
-            None, self.cfg.timeout_sec,
+            None, self.cfg.timeout_sec, token=self.cfg.token,
         )
 
     def health(self) -> bool:
