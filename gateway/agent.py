@@ -260,11 +260,27 @@ def main() -> None:
     if args.mock:
         collar, disp, scale = MockCollar(), MockDispenser(args.jam), MockScale()
     else:
-        raise SystemExit(
-            "실물 하드웨어 구현이 아직 없습니다.\n"
-            "gateway/hardware.py 의 CollarLink / Dispenser / Scale 을 구현한 뒤\n"
-            "여기서 연결하세요. 우선은 --mock 으로 전체 흐름을 확인할 수 있습니다."
-        )
+        # 조각마다 따로 판단한다.
+        #
+        # 하드웨어는 한꺼번에 완성되지 않는다. 모터는 됐는데 로드셀은
+        # 아직이고, 목줄은 펌웨어를 기다리는 상태가 정상이다.
+        # "전부 없으면 못 뜬다" 로 만들면 그동안 아무것도 시험할 수 없다.
+        from gateway import motor
+
+        if motor.available():
+            disp = motor.MotorDispenser()
+            log(f"디스펜서: 실물 (슬롯 {sorted(motor.PINS)})")
+            if motor.STEPS_PER_PELLET == 20:
+                log("  ⚠ 알갱이 보정이 기본값입니다. "
+                    "python -m gateway.calibrate <슬롯> 으로 실측하세요")
+        else:
+            disp = MockDispenser(args.jam)
+            log("디스펜서: Mock (gpiozero 없음)")
+
+        # 목줄과 저울은 아직 실물 구현이 없다. 생기면 여기에 꽂는다.
+        collar, scale = MockCollar(), MockScale()
+        log("목줄·저울: Mock — gateway/hardware.py 의 "
+            "CollarLink / Scale 을 구현하면 여기서 연결합니다")
 
     agent = Agent(CONFIG, collar, disp, scale)
     if args.once:

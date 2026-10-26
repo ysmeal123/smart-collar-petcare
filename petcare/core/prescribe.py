@@ -26,6 +26,7 @@ from core.constants import (
     CARTRIDGE_BY_ID,
     GUT_DOSE_PER_KG,
     GUT_TRIGGERS,
+    LOADED_SLOTS,
     SUNSET_WEEKS,
 )
 from core.dispense import apply_single_meal_penalty, assign_meals, to_pellets
@@ -58,6 +59,35 @@ def _gut_trigger(profile: DogProfile) -> str | None:
         if s.type is SurgeryType.GI and s.years_ago <= GUT_TRIGGERS["gi_surgery_recent_years"]:
             return "최근 소화기 수술 이력"
     return None
+
+
+def _drop_unloaded(
+    pellets: dict[str, int], trace: list[TraceStep]
+) -> dict[str, int]:
+    """
+    밥통에 장착되지 않은 로더의 알갱이를 뺀다.
+
+    정의된 카트리지는 7종인데 하드웨어 로더는 4개다. 정의에 있다고
+    뽑을 수 있는 게 아니다.
+
+    **화면과 실물이 어긋나면 안 된다.** 계획에 "진정·수면 2알" 이 떴는데
+    뽑을 로더가 없으면, 보호자는 줬다고 믿고 실제로는 안 나간다.
+    차라리 처음부터 빼고 왜 뺐는지 말하는 편이 낫다.
+    """
+    kept = {cid: n for cid, n in pellets.items()
+            if CARTRIDGE_BY_ID[cid].slot in LOADED_SLOTS}
+
+    for cid in pellets:
+        if cid in kept:
+            continue
+        cart = CARTRIDGE_BY_ID[cid]
+        trace.append(TraceStep(
+            step="로더 없음",
+            detail=f"{cart.name} {pellets[cid]}알이 필요하지만 "
+                   f"{cart.slot}번 로더가 장착되지 않아 제외했습니다.",
+            changed=True,
+        ))
+    return kept
 
 
 def _apply_context(
@@ -252,7 +282,17 @@ def prescribe(
     if pellets == before:
         trace.append(TraceStep(step="🛡 상한 검증", detail="모든 영양소가 안전 범위 내"))
 
-    # ── 8. 끼니 배분 ───────────────────────────────────────────────────
+    # ── 8. 장착된 로더만 남긴다 ────────────────────────────────────────
+    #
+    # **영양학적 판단이 아니라 기계 제약이다.** 그래서 계산은 위에서 전부
+    # 끝내고 여기서 덜어낸다. 대체(어유→조류)도 이미 끝난 뒤라, 대체품까지
+    # 로더가 없으면 그때 비로소 빠진다.
+    #
+    # 조용히 빼지 않는다. 근거에 "로더 없음" 이라고 적어야 나중에 로더를
+    # 늘릴 때 무엇이 빠져 있었는지 보인다.
+    pellets = _drop_unloaded(pellets, trace)
+
+    # ── 9. 끼니 배분 ───────────────────────────────────────────────────
     items = assign_meals(pellets, profile.meals_per_day, trace)
     for it in items:
         it.reason = reasons.get(it.cartridge_id, "")

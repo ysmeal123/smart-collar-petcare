@@ -62,12 +62,21 @@ def cart_ids(rx) -> set[str]:
 # Layer 1 — 절대 금기
 # ---------------------------------------------------------------------------
 
-def test_생선알러지면_어유대신_조류오메가3(skin_case):
+def test_생선알러지면_어유대신_조류오메가3(skin_case, monkeypatch):
     """
     가장 중요한 대체 경로.
 
     어유는 우리 핵심 성분이라, 대체가 없으면 피부·관절 처방이 통째로 막힌다.
+
+    조류 오메가3(7번)를 장착 슬롯에 넣고 잰다. 이 테스트가 보려는 것은
+    **안전 대체 로직**이고, 로더를 몇 개 달았느냐는 별개의 기계 제약이다.
+    둘을 섞으면 로더 구성을 바꿀 때마다 안전 테스트가 깨진다.
     """
+    import core.constants as const
+    import core.prescribe as presc
+    monkeypatch.setattr(const, "LOADED_SLOTS", frozenset({1, 2, 3, 7}))
+    monkeypatch.setattr(presc, "LOADED_SLOTS", frozenset({1, 2, 3, 7}))
+
     profile = with_profile(skin_case, allergies=[Allergen.FISH])
     rx, _ = prescribe(profile, skin_case.days)
 
@@ -434,3 +443,71 @@ def test_관절수술이력이_기준선을_낮춘다(skin_case):
     z_op = next(a.z_score for a in rx_op.axes if a.axis is HealthAxis.MOBILITY)
 
     assert z_op < z_plain, "수술 이력이 관절축 기준선을 낮추지 않았다"
+
+
+# ---------------------------------------------------------------------------
+# 장착된 로더만 사출할 수 있다
+#
+# 카트리지 정의는 7종인데 하드웨어 로더는 4개다(조립 안내서 기준).
+# 정의에 있다고 뽑을 수 있는 게 아니다.
+# ---------------------------------------------------------------------------
+
+def _load(monkeypatch, slots):
+    import core.constants as const
+    import core.prescribe as presc
+    monkeypatch.setattr(const, "LOADED_SLOTS", frozenset(slots))
+    monkeypatch.setattr(presc, "LOADED_SLOTS", frozenset(slots))
+
+
+def test_장착되지_않은_로더는_처방되지_않는다(skin_case, monkeypatch):
+    """
+    **화면과 실물이 어긋나면 안 된다.**
+
+    계획에 "피부장벽 1알" 이 떴는데 뽑을 로더가 없으면, 보호자는 줬다고
+    믿고 실제로는 안 나간다. 조용히 빠지는 게 제일 나쁘다.
+    """
+    _load(monkeypatch, {1})          # 오메가3만 장착
+    rx, _ = prescribe(skin_case.profile, skin_case.days)
+
+    from core.constants import CARTRIDGE_BY_ID
+    for item in rx.items:
+        assert CARTRIDGE_BY_ID[item.cartridge_id].slot == 1, \
+            f"{item.name} 은 로더가 없는데 처방됐다"
+
+
+def test_뺐으면_뺐다고_말한다(skin_case, monkeypatch):
+    """나중에 로더를 늘릴 때 무엇이 빠져 있었는지 보여야 한다."""
+    _load(monkeypatch, {1})
+    rx, _ = prescribe(skin_case.profile, skin_case.days)
+
+    trace = " ".join(t.detail for t in rx.trace)
+    assert "로더가 장착되지 않아" in trace, "조용히 뺐다"
+    assert "피부장벽" in trace
+
+
+def test_로더_제약이_안전_판단을_건너뛰지_않는다(skin_case, monkeypatch):
+    """
+    **기계 제약은 맨 마지막이다.**
+
+    로더가 없다고 해서 상한 검증이나 금기 차단을 건너뛰면 안 된다.
+    순서가 바뀌면 "로더가 없어서 통과" 같은 일이 생긴다.
+    """
+    _load(monkeypatch, {1, 2, 3, 4})
+    rx, _ = prescribe(skin_case.profile, skin_case.days)
+
+    steps = [t.step for t in rx.trace]
+    assert any("상한 검증" in s for s in steps), "상한 검증이 사라졌다"
+    if any("로더 없음" == s for s in steps):
+        assert steps.index("🛡 상한 검증") < steps.index("로더 없음"), \
+            "로더 제약이 안전 검증보다 먼저 돌았다"
+
+
+def test_로더를_늘리면_그대로_살아난다(skin_case, monkeypatch):
+    """제외는 영구 삭제가 아니라 기계 구성에 따른 것이어야 한다."""
+    _load(monkeypatch, {1})
+    few = prescribe(skin_case.profile, skin_case.days)[0]
+
+    _load(monkeypatch, {1, 2, 3, 4})
+    many = prescribe(skin_case.profile, skin_case.days)[0]
+
+    assert len(many.items) > len(few.items), "로더를 늘렸는데 처방이 안 늘었다"

@@ -361,3 +361,154 @@ def test_서버가_거부한_묶음은_버리고_다음으로_넘어간다(monke
     agent.upload()
 
     assert agent.buffer.pending()[0] == 0      # 둘 다 비워졌다 (큐가 안 막힌다)
+
+
+# ---------------------------------------------------------------------------
+# 실물 디스펜서 (gpiozero 없이 검증 가능한 부분)
+#
+# 모터를 못 돌려도 "몇 펄스를 보낼지" 와 "결과를 어떻게 보고하는지" 는
+# 잴 수 있다. 조립 전에 로직 실수를 잡아두는 게 목적이다.
+# ---------------------------------------------------------------------------
+
+class FakePin:
+    """gpiozero.OutputDevice 를 대신한다. 켜진 횟수를 센다."""
+
+    def __init__(self, pin, initial_value=False):
+        self.pin = pin
+        self.value = initial_value
+        self.pulses = 0
+
+    def on(self):
+        if not self.value:
+            self.pulses += 1
+        self.value = True
+
+    def off(self):
+        self.value = False
+
+    def close(self):
+        pass
+
+
+@pytest.fixture
+def motor_dev(monkeypatch):
+    """gpiozero 없이 MotorDispenser 를 만든다."""
+    import sys
+    import types
+
+    fake = types.ModuleType("gpiozero")
+    fake.OutputDevice = FakePin
+    monkeypatch.setitem(sys.modules, "gpiozero", fake)
+
+    from gateway import motor
+    monkeypatch.setattr(motor, "PULSE_S", 0)        # 테스트는 기다리지 않는다
+    return motor
+
+
+def test_알갱이_수만큼_펄스를_보낸다(motor_dev):
+    dev = motor_dev.MotorDispenser(steps_per_pellet=20)
+    r = dev.dispense(0, [{"slot": 1, "count": 4, "name": "오메가3"}])
+
+    assert r.pellets == {1: 4}
+    # EN 을 내렸다 올리는 것까지 포함해 STEP 만 센다
+    assert dev._step[1].pulses == 80, "4알 × 20펄스 = 80"
+
+
+def test_여러_슬롯을_각각_돌린다(motor_dev):
+    dev = motor_dev.MotorDispenser(steps_per_pellet=10)
+    r = dev.dispense(0, [
+        {"slot": 1, "count": 3, "name": "오메가3"},
+        {"slot": 3, "count": 2, "name": "관절"},
+    ])
+
+    assert r.pellets == {1: 3, 3: 2}
+    assert dev._step[1].pulses == 30
+    assert dev._step[3].pulses == 20
+    assert dev._step[2].pulses == 0, "요청하지 않은 슬롯이 돌았다"
+
+
+def test_EN_은_평소에_HIGH_다(motor_dev):
+    """
+    EN HIGH = 출력 차단. 평소에 LOW 로 두면 모터가 계속 전류를 먹고
+    뜨거워지며, 손으로 돌릴 수도 없다.
+    """
+    dev = motor_dev.MotorDispenser()
+    for slot in dev.pins:
+        assert dev._en[slot].value is True, f"{slot}번 EN 이 시작부터 LOW 다"
+
+    dev.dispense(0, [{"slot": 1, "count": 1}])
+    assert dev._en[1].value is True, "사출 후 EN 을 HIGH 로 되돌리지 않았다"
+
+
+def test_배선되지_않은_슬롯은_실패로_보고한다(motor_dev):
+    """
+    **조용히 넘어가면 안 된다.** 서버는 준 걸로 알고 섭취량을 대조한다.
+    """
+    dev = motor_dev.MotorDispenser(pins={1: (17, 27, 22)})
+    r = dev.dispense(0, [{"slot": 5, "count": 2, "name": "진정·수면"}])
+
+    assert r.ok is False
+    assert "진정·수면" in r.error
+    assert r.pellets == {}
+
+
+def test_폭주를_상한에서_막는다(motor_dev, monkeypatch):
+    """
+    보정값에 0 이 하나 더 붙으면 로더가 통째로 비워진다.
+    상한이 없으면 BB 가 바닥에 쏟아진다.
+    """
+    monkeypatch.setattr(motor_dev, "MAX_STEPS", 100)
+    dev = motor_dev.MotorDispenser(steps_per_pellet=1000)
+    r = dev.dispense(0, [{"slot": 1, "count": 5, "name": "오메가3"}])
+
+    assert dev._step[1].pulses == 100, "상한을 넘겨 돌았다"
+    assert r.ok is False, "못 채웠는데 성공이라고 했다"
+    assert "5알 중" in r.error
+
+
+def test_사료_모터가_없으면_안_줬다고_말한다(motor_dev):
+    """
+    영양제 시연에는 지장이 없지만, 밥을 줬다고 거짓말하면 안 된다.
+    서버의 섭취량 대조가 통째로 틀어진다.
+    """
+    dev = motor_dev.MotorDispenser(food_slot=None)
+    r = dev.dispense(90, [])
+
+    assert r.food_g == 0
+    assert r.ok is False
+    assert "미장착" in r.error
+
+
+def test_한_슬롯이_실패해도_나머지는_계속한다(motor_dev):
+    """
+    하나 막혔다고 그날 영양제를 통째로 거르는 것보다,
+    되는 것만 주고 무엇이 안 됐는지 보고하는 게 낫다.
+    """
+    dev = motor_dev.MotorDispenser(pins={1: (17, 27, 22), 3: (16, 20, 21)},
+                                   steps_per_pellet=10)
+    r = dev.dispense(0, [
+        {"slot": 1, "count": 2, "name": "오메가3"},
+        {"slot": 9, "count": 1, "name": "없는슬롯"},
+        {"slot": 3, "count": 1, "name": "관절"},
+    ])
+
+    assert r.pellets == {1: 2, 3: 1}, "실패 뒤 슬롯이 건너뛰어졌다"
+    assert r.ok is False
+    assert "없는슬롯" in r.error
+
+
+def test_핀_배치가_안내서와_같다():
+    """
+    조립 안내서 08장 표. 여기가 어긋나면 엉뚱한 모터가 돈다.
+    배선을 바꿨다면 이 테스트도 같이 바꿔야 한다 - 그게 의도다.
+    """
+    from gateway.motor import PINS
+
+    assert PINS[1] == (17, 27, 22)   # 물리 11 / 13 / 15
+    assert PINS[2] == (5, 6, 13)     # 물리 29 / 31 / 33
+    assert PINS[3] == (16, 20, 21)   # 물리 36 / 38 / 40
+    assert PINS[4] == (23, 24, 25)   # 물리 16 / 18 / 22
+
+    # I²C(물리 3·5 = GPIO2·3)와 겹치면 로드셀이 죽는다
+    used = {p for pins in PINS.values() for p in pins}
+    assert not (used & {2, 3}), "I²C 핀을 모터에 배정했다"
