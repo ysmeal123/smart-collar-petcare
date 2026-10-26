@@ -1,0 +1,40 @@
+[Unit]
+# 밥통의 게이트웨이. 전원이 들어오면 알아서 뜬다.
+#
+# 제품에는 모니터도 키보드도 없다. 사람이 터미널을 열어 실행할 수 없으니
+# systemd 가 대신 띄우고, 죽으면 다시 띄운다.
+Description=pebble gateway (collar BLE / dispenser / server sync)
+Documentation=https://github.com/ysmeal123/smart-collar-petcare
+
+# 네트워크가 올라온 뒤에 시작한다. 그 전에 떠도 죽지는 않지만
+# (버퍼에 쌓고 재시도한다) 첫 업로드가 괜히 한 번 실패한다.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/smart-collar-petcare
+
+# 토큰은 유닛 파일에 적지 않는다.
+#
+# 유닛 파일은 /etc/systemd/system 에 있고 누구나 읽을 수 있다.
+# 환경 파일은 600 으로 잠근다. install.sh 가 그렇게 만든다.
+EnvironmentFile=/etc/pebble/gateway.env
+
+ExecStart=/usr/bin/python3 -m gateway.agent
+
+# 죽으면 다시 띄운다. **밥이 안 나가는 것이 제일 나쁘다.**
+#
+# 10초 간격을 둔다. 설정이 잘못돼 즉시 죽는 경우 1초 간격으로 재시작하면
+# 로그가 쓰레기로 가득 차고 SD 카드 수명을 깎는다.
+Restart=always
+RestartSec=10
+
+# 로그는 journald 로. 파일로 쓰면 SD 카드가 먼저 죽는다.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pebble
+
+[Install]
+WantedBy=multi-user.target

@@ -308,6 +308,36 @@ PEBBLE_SLOTS=1,2,3,4      # 기본값. 다르게 꽂았으면 바꾼다
 > 어유가 차단된 뒤 대체품도 못 뽑아 오메가3가 0알이 된다.
 > 그런 개체를 시연할 거면 `PEBBLE_SLOTS` 에 7을 넣는다.
 
+### 제품에는 모니터도 키보드도 없다
+
+밥통 안에 들어가는 컴퓨터다. 사람이 터미널을 열어 실행할 수 없으니
+**전원이 들어오면 알아서 떠야 하고, 죽으면 알아서 다시 떠야 한다.**
+
+```bash
+sudo bash gateway/install.sh
+sudo nano /etc/pebble/gateway.env     # 토큰을 채운다
+sudo systemctl start pebble-gateway
+```
+
+한 번만 하면 된다. 그 뒤로는 코드를 받고 재시작만 하면 된다.
+
+```bash
+git pull && sudo systemctl restart pebble-gateway
+```
+
+| | |
+|---|---|
+| 상태 | `systemctl status pebble-gateway` |
+| 로그 | `journalctl -u pebble-gateway -f` |
+| 중지 | `sudo systemctl stop pebble-gateway` |
+
+**토큰은 유닛 파일에 넣지 않는다.** `/etc/systemd/system` 은 누구나 읽을 수
+있다. `/etc/pebble/gateway.env` 를 600 으로 잠그고 거기에 둔다.
+
+로그는 journald 로 보낸다. 파일로 쌓으면 SD 카드가 먼저 죽는다.
+재시작 간격을 10초로 둔 것도 같은 이유다 - 설정이 틀려 즉시 죽는 경우
+1초 간격으로 재시작하면 로그가 쓰레기로 차고 카드 수명을 깎는다.
+
 ### 아직 없는 것
 
 | | |
