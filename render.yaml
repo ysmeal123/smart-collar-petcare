@@ -28,3 +28,8 @@ databases:
   - name: pebble-db
     databaseName: pebble
     plan: free
+    # **웹 서비스와 같은 리전이어야 한다.**
+    # Render 의 내부 주소(dpg-xxxx-a)는 같은 리전 안에서만 풀린다.
+    # 여기를 비워두면 기본값(오레곤)으로 만들어지고, 싱가포르 웹 서비스가
+    # 그 이름을 찾다가 "Name or service not known" 으로 죽는다.
+    region: singapore

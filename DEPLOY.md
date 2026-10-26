@@ -23,13 +23,37 @@ PEBBLE_DEVICE_TOKEN   밥통(게이트웨이)이 쓴다
 PEBBLE_APP_TOKEN      앱이 쓴다
 ```
 
-5. 첫 데이터 넣기 — **Shell** 탭에서
+5. 첫 데이터 넣기 — **Environment** 탭에 한 줄 추가
 
-```bash
-python -m seed_remote
+```
+PEBBLE_SEED=1
 ```
 
-이미 데이터가 있으면 건너뛴다. 재배포해도 안전하다.
+저장하면 재배포되고, 시작할 때 시연용 데이터를 넣는다.
+
+> **무료 플랜에는 Shell 접속이 없다.** `python -m seed_remote` 를 손으로
+>돌릴 수 없어서 시작 훅에서 대신 한다.
+> 이미 데이터가 있으면 건너뛰므로 재배포해도 안전하다.
+> 실데이터를 쌓기 시작하면 이 줄을 지워도 된다.
+
+### 리전을 맞춘다
+
+`render.yaml` 에 웹 서비스와 DB 가 **같은 리전**으로 적혀 있어야 한다.
+
+```yaml
+services:
+  - region: singapore
+databases:
+  - region: singapore      # 빠뜨리면 기본값(오레곤)이 된다
+```
+
+Render 의 내부 주소(`dpg-xxxx-a`)는 **같은 리전 안에서만** 풀린다.
+어긋나면 이렇게 죽는다.
+
+```
+psycopg.OperationalError: failed to resolve host 'dpg-...-a'
+    [Errno -2] Name or service not known
+```
 
 ---
 

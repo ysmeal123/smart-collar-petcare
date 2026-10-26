@@ -51,7 +51,7 @@ def _startup() -> None:
     """
     import config
 
-    db.init()
+    _init_db_with_retry()
 
     auth = auth_status()
     for path in _ENV_FILES:
@@ -72,6 +72,71 @@ def _startup() -> None:
     # 값은 찍지 않는다. 켜졌는지만.
     for line in config.summary():
         print(line, flush=True)
+
+    _seed_if_asked()
+
+
+def _init_db_with_retry(attempts: int = 6, wait_s: float = 5.0) -> None:
+    """
+    스키마를 만든다. DB 가 아직 안 깨어났으면 기다렸다 다시 한다.
+
+    첫 배포에서는 웹 서비스가 DB 보다 먼저 뜨는 경합이 흔하다.
+    그때 바로 죽으면 "배포 실패" 로 보이고, 원인이 설정 오류인지
+    단순한 순서 문제인지 구분이 안 된다.
+
+    끝내 안 되면 그때는 **죽는 게 맞다.** DB 없이 뜬 서버는 모든 요청에서
+    500 을 내고, 그게 더 찾기 어렵다.
+    """
+    import time
+
+    for i in range(1, attempts + 1):
+        try:
+            db.init()
+            if i > 1:
+                print(f"[pebble] DB 연결 성공 ({i}번째 시도)", flush=True)
+            return
+        except Exception as e:                               # noqa: BLE001
+            if i == attempts:
+                print(
+                    f"[pebble] ✗ DB 연결 실패 ({type(e).__name__}). "
+                    "DATABASE_URL 과 DB 리전을 확인하세요 — "
+                    "내부 주소는 같은 리전에서만 풀립니다.",
+                    flush=True,
+                )
+                raise
+            print(
+                f"[pebble] DB 준비 대기 {i}/{attempts} "
+                f"({type(e).__name__}) — {wait_s:.0f}초 뒤 재시도",
+                flush=True,
+            )
+            time.sleep(wait_s)
+
+
+def _seed_if_asked() -> None:
+    """
+    PEBBLE_SEED=1 이면 비어 있는 DB 에 시연용 데이터를 넣는다.
+
+    **무료 플랜에는 Shell 접속이 없다.** `python -m seed_remote` 를 손으로
+    돌릴 방법이 없어서, 시작 훅에서 대신 한다.
+
+    **이미 데이터가 있으면 아무것도 하지 않는다.** 무료 인스턴스는 15분마다
+    잠들고 깨므로 이 훅이 수시로 돈다. 매번 덮어쓰면 그동안 쌓인 실데이터가
+    날아간다 - seed_remote 가 개체 수를 먼저 세는 이유다.
+
+    시드가 실패해도 서버는 뜬다. 데이터가 없는 건 고칠 수 있지만,
+    서버가 안 뜨면 고칠 방법이 없다.
+    """
+    import os
+
+    if os.environ.get("PEBBLE_SEED", "").strip() not in ("1", "true", "yes"):
+        return
+
+    try:
+        from seed_remote import main as seed
+        seed()
+    except Exception as e:                                   # noqa: BLE001
+        print(f"[pebble] ⚠ 시드 실패 ({type(e).__name__}: {e}) — 서버는 계속 뜹니다",
+              flush=True)
 
 
 class PrescribeRequest(BaseModel):
