@@ -36,6 +36,12 @@
  *   POST /calibrate  slot=1..4 steps=N    펄스 수를 직접 지정 (양 보정용)
  *   POST /unpair                          맺어둔 목줄을 잊는다
  *
+ * 목줄 BLE 계약 (전부 리틀엔디안)
+ *   now 10B  u8 클래스, u8 신뢰도, u32 t_ms, u32 부팅ID            1초마다
+ *   min 20B  u32 부팅ID, u32 일련번호, u32 t_ms, u16×4 요약        쌓인 것 포함
+ *   shk 13B  u32 부팅ID, u32 일련번호, u32 t_ms, u8 신뢰도
+ *   ack  8B  u32 받은 min 일련번호, u32 받은 털기 일련번호          밥통 -> 목줄
+ *
  * 배출은 요청을 받자마자 응답(202)하고 loop() 에서 실행한다.
  * 사료를 길게 돌리면 수십 초가 걸려 HTTP 가 타임아웃 나기 때문이다.
  * 진행 상황은 /status 로 본다. 배출 중 새 요청은 409 로 거절한다 —
@@ -231,6 +237,7 @@ volatile bool minFresh = false;
 // 보내면 수백 건이 전부 '지금' 으로 찍히고, 그건 거짓이다.
 struct MinuteSample {
   uint32_t bootId;
+  uint32_t seq;          // 목줄이 매긴다. 유실을 알아보는 열쇠
   uint32_t t_ms;
   uint16_t rest_s, walk_s, run_s, shake_n;
 };
@@ -284,7 +291,7 @@ static uint32_t collarNowMs() {
 // (예: 60000)이 전부 '이미 받은 것' 으로 걸러진다. 조용히 버려지므로
 // 로그에도 안 남는다 - 실제로 그래서 재연결 뒤 아무것도 안 올라갔다.
 uint32_t ackBootId = 0;
-uint32_t ackMinTms = 0;
+uint32_t ackMinSeq = 0;
 uint32_t ackShakeSeq = 0;
 bool ackPending = false;
 NimBLERemoteCharacteristic* chAckRemote = nullptr;
@@ -302,7 +309,7 @@ static void syncAckBoot(uint32_t boot) {
     rebootNoticed = true;
   }
   ackBootId = boot;
-  ackMinTms = 0;
+  ackMinSeq = 0;
   ackShakeSeq = 0;
   ackPending = false;
 }
@@ -394,14 +401,15 @@ static void onNow(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) 
  * 제 시각에 꽂힌다. 화면에 띄울 '최근 1분' 만 따로 갱신한다.
  */
 static void onMin(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) {
-  if (len < 16) return;
+  if (len < 20) return;
   MinuteSample s;
   s.bootId  = rd32(data);
-  s.t_ms    = rd32(data + 4);
-  s.rest_s  = rd16(data + 8);
-  s.walk_s  = rd16(data + 10);
-  s.run_s   = rd16(data + 12);
-  s.shake_n = rd16(data + 14);
+  s.seq     = rd32(data + 4);
+  s.t_ms    = rd32(data + 8);
+  s.rest_s  = rd16(data + 12);
+  s.walk_s  = rd16(data + 14);
+  s.run_s   = rd16(data + 16);
+  s.shake_n = rd16(data + 18);
 
   // **이미 서버에 넣은 것은 받지 않는다.**
   //
@@ -409,9 +417,9 @@ static void onMin(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) 
   // 사본으로 차서 새 기록이 들어갈 자리가 없어진다. 서버가 중복을
   // 막아주긴 하지만, 여기서 거르면 올릴 일 자체가 없다.
   syncAckBoot(s.bootId);
-  if (s.bootId == ackBootId && ackMinTms && s.t_ms <= ackMinTms) return;
+  if (s.bootId == ackBootId && s.seq <= ackMinSeq) return;
   for (int i = 0; i < nSamples; i++) {
-    if (samples[i].bootId == s.bootId && samples[i].t_ms == s.t_ms) return;
+    if (samples[i].bootId == s.bootId && samples[i].seq == s.seq) return;
   }
   if (!pushSample(s)) return;        // 자리가 없으면 안 받는다. 목줄이 다시 보낸다
 
@@ -444,7 +452,7 @@ static void onShake(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool
 
   // 재전송된 것은 받지 않는다 (onMin 과 같은 이유).
   syncAckBoot(e.bootId);
-  if (e.bootId == ackBootId && ackShakeSeq && e.seq <= ackShakeSeq) return;
+  if (e.bootId == ackBootId && e.seq <= ackShakeSeq) return;
   for (int i = 0; i < nShakes; i++) {
     if (shakes[i].bootId == e.bootId && shakes[i].seq == e.seq) return;
   }
@@ -520,7 +528,7 @@ static void connectCollar() {
   // 이름만 흉내낸 기기에 못 박혀서 진짜 목줄을 못 찾게 된다.
   if (pairedAddr.length() == 0) savePair(collarAddr.toString().c_str());
   // 다시 붙었으면 밀린 것부터 온다. ack 는 서버에 올라간 뒤에 보낸다.
-  ackPending = (ackMinTms || ackShakeSeq);
+  ackPending = (ackMinSeq || ackShakeSeq);
   Serial.println("[BLE] 목줄 연결됨 — 1초마다 행동, 1분마다 요약을 받습니다");
 }
 
@@ -1149,6 +1157,29 @@ static String isoNow() {
  * **시계가 안 맞으면 보내지 않는다.** t_ms 를 실시각으로 환산하는 기준이
  * received_at 인데, 그게 1970년이면 데이터가 전부 1970년에 꽂힌다.
  */
+/**
+ * `from` 다음부터 **끊김 없이 이어진** 마지막 번호를 돌려준다.
+ *
+ * 올린 번호가 {5,6,8} 이고 from 이 4면 6을 돌려준다. 7이 빠졌으니 8까지
+ * 받았다고 말할 수 없다. 그 하나를 잘못 말하면 목줄이 7을 버린다.
+ */
+static uint32_t contiguousTo(uint32_t from, uint32_t* seqs, int n) {
+  // 작은 배열이라 삽입정렬로 충분하다 (최대 수백 개).
+  for (int i = 1; i < n; i++) {
+    uint32_t v = seqs[i];
+    int j = i - 1;
+    while (j >= 0 && seqs[j] > v) { seqs[j + 1] = seqs[j]; j--; }
+    seqs[j + 1] = v;
+  }
+  uint32_t cur = from;
+  for (int i = 0; i < n; i++) {
+    if (seqs[i] <= cur) continue;          // 이미 지난 번호
+    if (seqs[i] == cur + 1) cur = seqs[i];
+    else break;                            // 구멍. 여기서 멈춘다
+  }
+  return cur;
+}
+
 static void uploadCollar() {
   if (nSamples == 0 && nShakes == 0) return;
   String now = isoNow();
@@ -1167,18 +1198,19 @@ static void uploadCollar() {
 
   // 이 묶음의 uptime_ms 를 **먼저** 구한다. 목줄 시계를 모르면 가장 늦은
   // t_ms 로 대신한다 - 그보다 과거일 수는 없다.
-  uint32_t maxT = 0, maxSeq = 0;
+  uint32_t maxT = 0;
   for (int i = 0; i < nSamples; i++)
     if (samples[i].bootId == boot && samples[i].t_ms > maxT) maxT = samples[i].t_ms;
   for (int i = 0; i < nShakes; i++)
-    if (shakes[i].bootId == boot) {
-      if (shakes[i].t_ms > maxT) maxT = shakes[i].t_ms;
-      if (shakes[i].seq > maxSeq) maxSeq = shakes[i].seq;
-    }
+    if (shakes[i].bootId == boot && shakes[i].t_ms > maxT) maxT = shakes[i].t_ms;
   uint32_t up = collarNowMs();
   if (up < maxT) up = maxT;
 
   int nS = 0, nE = 0;
+  // 이번에 올린 번호들. ack 를 어디까지 할지 정하는 데 쓴다.
+  static uint32_t upMinSeqs[MAX_SAMPLES];
+  static uint32_t upShakeSeqs[MAX_EVENTS];
+  int nUpMin = 0, nUpShake = 0;
 
   String j = "{\"collar_serial\":\"" + String(COLLAR_SERIAL) + "\"";
   j += ",\"boot_id\":" + String(boot);
@@ -1198,6 +1230,7 @@ static void uploadCollar() {
     j += ",\"conf\":" + String(shakes[i].conf / 100.0f, 2);
     // 판정 창이 1초다. 실제 지속시간은 모르므로 창 길이를 쓴다.
     j += ",\"dur_s\":1.0}";
+    upShakeSeqs[nUpShake++] = shakes[i].seq;
   }
   j += "],\"status\":[";
   for (int i = 0; i < nSamples; i++) {
@@ -1226,6 +1259,7 @@ static void uploadCollar() {
     j += ",\"run_sec\":" + String(ru);
     // 모델에 '격렬' 클래스가 없다. 뛰기까지만 구분한다.
     j += ",\"vigorous_sec\":0}";
+    upMinSeqs[nUpMin++] = m.seq;
   }
   j += "]}";
 
@@ -1261,9 +1295,15 @@ static void uploadCollar() {
 
   // **목줄에게 알려준다.** 서버에 들어간 뒤에만 보낸다 - 밥통이 받기만
   // 하고 알려주면, 밥통이 재부팅할 때 그 사이 기록이 사라진다.
+  //
+  // 그리고 **끊김 없이 이어진 구간까지만** 알려준다.
+  //
+  // 알림은 유실될 수 있다. 1,3 을 받았는데 "3까지 받았다" 고 하면 목줄이
+  // 2까지 버려서 영구히 사라진다. 번호가 이어진 데까지만 ack 하면, 목줄은
+  // 2부터 다시 보낸다 - 늦어질 뿐 잃지 않는다.
   if (boot == ackBootId) {
-    if (maxT > ackMinTms) ackMinTms = maxT;
-    if (maxSeq > ackShakeSeq) ackShakeSeq = maxSeq;
+    ackMinSeq   = contiguousTo(ackMinSeq, upMinSeqs, nUpMin);
+    ackShakeSeq = contiguousTo(ackShakeSeq, upShakeSeqs, nUpShake);
     ackPending = true;
   }
 }
@@ -1273,12 +1313,22 @@ static void uploadCollar() {
 static void sendAck() {
   if (!ackPending || !collarConnected || chAckRemote == nullptr) return;
   uint8_t buf[8];
-  buf[0] = ackMinTms;       buf[1] = ackMinTms >> 8;
-  buf[2] = ackMinTms >> 16; buf[3] = ackMinTms >> 24;
+  buf[0] = ackMinSeq;       buf[1] = ackMinSeq >> 8;
+  buf[2] = ackMinSeq >> 16; buf[3] = ackMinSeq >> 24;
   buf[4] = ackShakeSeq;       buf[5] = ackShakeSeq >> 8;
   buf[6] = ackShakeSeq >> 16; buf[7] = ackShakeSeq >> 24;
-  if (chAckRemote->writeValue(buf, 8, false)) {
+  // **응답 있는 쓰기로 보낸다.**
+  //
+  // 처음에 false(응답 없는 쓰기)로 보냈더니 목줄이 조용히 무시했다. 목줄의
+  // 특성은 BLEWrite 하나뿐이고 그건 '응답 있는 쓰기' 만 받는다. 게다가
+  // 응답 없는 쓰기는 성공 여부를 안 돌려주니 밥통은 잘 된 줄 알았다 -
+  // 목줄 버퍼는 계속 늘어나는데 밥통 로그는 '남음 0/0' 이었다.
+  if (chAckRemote->writeValue(buf, 8, true)) {
     ackPending = false;
+    Serial.printf("[ack] 목줄에 알림: 요약 %lu번, 털기 %lu번까지\n",
+                  (unsigned long)ackMinSeq, (unsigned long)ackShakeSeq);
+  } else {
+    Serial.println("[ack] 목줄에 못 썼습니다 — 다음에 다시 시도합니다");
   }
 }
 

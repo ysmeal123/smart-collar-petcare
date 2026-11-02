@@ -15,9 +15,16 @@
  *   BLE  이름 "pebble-collar"   (전부 리틀엔디안)
  *     서비스        19b10000-e8f2-537e-4f6c-d104768a1214
  *     now  (notify) 19b10001-...  10B  u8 클래스, u8 신뢰도(0~100), u32 t_ms, u32 부팅ID
- *     min  (notify) 19b10002-...  16B  u32 부팅ID, u32 t_ms, u16 쉬기초/걷기초/뛰기초/털기수
+ *     min  (notify) 19b10002-...  20B  u32 부팅ID, u32 일련번호, u32 t_ms,
+ *                                      u16 쉬기초/걷기초/뛰기초/털기수
  *     shk  (notify) 19b10003-...  13B  u32 부팅ID, u32 일련번호, u32 t_ms, u8 신뢰도
- *     ack  (write)  19b10004-...   8B  u32 받은 min 의 t_ms, u32 받은 털기 일련번호
+ *     ack  (write)  19b10004-...   8B  u32 받은 min 일련번호, u32 받은 털기 일련번호
+ *
+ * **일련번호가 둘 다 있어야 한다.** 알림은 유실될 수 있다 - 연결 간격보다
+ * 빠르게 쓰면 전송 전에 다음 값이 덮는다. 번호가 없으면 밥통이 "1,3 을
+ * 받았다" 와 "1,2,3 을 받았다" 를 구분할 수 없고, 3까지 받았다고 ack 하면
+ * 유실된 2가 영구히 사라진다. 그래서 밥통은 **끊김 없이 이어진 구간까지만**
+ * ack 하고, 목줄은 그 뒤부터 다시 보낸다.
  *
  * **끊긴 동안 모아둔다.** BLE 가 끊기면 1분 요약과 털기를 RAM 에 쌓고,
  * 다시 붙으면 밀린 것부터 쏟아낸다. 개는 돌아다니고 밥통은 부엌에 고정돼
@@ -83,6 +90,7 @@ unsigned long minuteStart = 0;
 // ---------------------------------------------------------------------------
 
 struct MinRec {
+  uint32_t seq;                      // 부팅 후 통산 번호. 유실을 알아보는 열쇠
   uint32_t t_ms;                     // 이 1분이 끝난 시점 (목줄 uptime)
   uint16_t rest, walk, run, shake;
 };
@@ -100,6 +108,7 @@ MinRec   minBuf[MIN_CAP];
 ShakeRec shakeBuf[SHAKE_CAP];
 int minCount = 0, shakeCount = 0;    // 앞에서부터 쌓여 있다 (오래된 것이 0번)
 int minSent  = 0, shakeSent  = 0;    // 여기까지 보냈다. ack 오면 앞을 버린다
+uint32_t minSeq = 0;
 uint32_t shakeSeq = 0;
 
 /**
@@ -138,7 +147,7 @@ static void dropShake(int n) {
 
 BLEService svc("19b10000-e8f2-537e-4f6c-d104768a1214");
 BLECharacteristic chNow("19b10001-e8f2-537e-4f6c-d104768a1214", BLERead | BLENotify, 10);
-BLECharacteristic chMin("19b10002-e8f2-537e-4f6c-d104768a1214", BLERead | BLENotify, 16);
+BLECharacteristic chMin("19b10002-e8f2-537e-4f6c-d104768a1214", BLERead | BLENotify, 20);
 BLECharacteristic chShake("19b10003-e8f2-537e-4f6c-d104768a1214", BLERead | BLENotify, 13);
 BLECharacteristic chAck("19b10004-e8f2-537e-4f6c-d104768a1214", BLEWrite, 8);
 bool bleOk = false;
@@ -289,11 +298,6 @@ void classifyAndPublish() {
 
   if (now - minuteStart >= 60000) {
     minuteStart = now;
-    char line[96];
-    snprintf(line, sizeof line,
-             "[1분] 쉬기 %u초 걷기 %u초 뛰기 %u초 털기 %u회  (쌓임 %d/%d)",
-             minSec[0], minSec[1], minSec[2], minShake, minCount, shakeCount);
-    Serial.println(line);
 
     // **합이 60을 넘을 수 있다.** 판정은 1초 간격이고 창 경계는 60초인데
     // 둘이 정확히 맞물리지 않아 한 창에 61번 들어오는 일이 있다. 실제로
@@ -308,11 +312,19 @@ void classifyAndPublish() {
       else                        ru--;
     }
 
+    // **깎은 값을 찍는다.** 원래 값을 찍으면 '61초' 가 보이는데 저장된 건
+    // 60이라, 로그와 실제가 어긋나서 버그를 찾을 때 헷갈린다.
+    char line[96];
+    snprintf(line, sizeof line,
+             "[1분] 쉬기 %u초 걷기 %u초 뛰기 %u초 털기 %u회  (쌓임 %d/%d)",
+             r, w, ru, minShake, minCount + 1, shakeCount);
+    Serial.println(line);
+
     // **연결 여부와 무관하게 쌓는다.** 예전에는 여기서 바로 보내고 카운터를
     // 지웠는데, 끊겨 있으면 알림이 아무데도 안 가고 다음 줄에서 지워져서
     // 그 1분이 영구히 사라졌다.
     if (minCount >= MIN_CAP) dropMin(1);
-    minBuf[minCount++] = {now, r, w, ru, minShake};
+    minBuf[minCount++] = {++minSeq, now, r, w, ru, minShake};
 
     minSec[0] = minSec[1] = minSec[2] = 0;
     minShake = 0;
@@ -323,9 +335,15 @@ void classifyAndPublish() {
 /**
  * 쌓인 것을 보낸다. **ack 가 올 때까지 버리지 않는다.**
  *
- * 한 번에 다 쏟지 않는다. 연결 간격보다 빠르게 알림을 쓰면 값이 덮여
- * 중간이 사라진다. 50ms 마다 하나씩, 초당 20개 - 하루치(1440개)를
- * 72초에 비운다.
+ * 한 번에 다 쏟지 않는다. **연결 간격보다 빠르게 알림을 쓰면 값이 덮여
+ * 중간이 사라진다.** 50ms 로 뒀더니 실제로 2분 36초 끊긴 뒤 쌓인 3건 중
+ * 1건만 도착했다. nRF52 의 기본 연결 간격이 50~100ms 라 절반 가까이
+ * 날아간 것이다.
+ *
+ * 200ms 로 늘렸다. 초당 5개, 하루치(1440개)를 5분에 비운다. 느리지만
+ * 끊긴 시간이 하루인 경우는 드물고, 빠르게 보내다 잃는 쪽이 더 나쁘다.
+ *
+ * 그래도 유실은 막지 못한다. 그건 일련번호와 ack 로 막는다.
  *
  * ack 를 못 받으면 다시 보낸다. 단 **오래 기다린다.** 밥통은 60초마다
  * 서버에 올리고 그 뒤에 ack 를 쓰므로, 짧게 잡으면 그 사이에 계속 전체를
@@ -342,19 +360,20 @@ static void drain() {
     minSent = shakeSent = 0;
     return;
   }
-  if (now - lastSend < 50) return;
+  if (now - lastSend < 200) return;
   lastSend = now;
 
   if (minSent < minCount) {
     const MinRec& r = minBuf[minSent];
-    uint8_t buf[16];
+    uint8_t buf[20];
     put32(buf, bootId);
-    put32(buf + 4, r.t_ms);
-    put16(buf + 8, r.rest);
-    put16(buf + 10, r.walk);
-    put16(buf + 12, r.run);
-    put16(buf + 14, r.shake);
-    chMin.writeValue(buf, 16);
+    put32(buf + 4, r.seq);
+    put32(buf + 8, r.t_ms);
+    put16(buf + 12, r.rest);
+    put16(buf + 14, r.walk);
+    put16(buf + 16, r.run);
+    put16(buf + 18, r.shake);
+    chMin.writeValue(buf, 20);
     minSent++;
     lastProgress = now;
     return;                          // 한 번에 하나만
@@ -386,11 +405,11 @@ static void drain() {
 static void serviceAck() {
   if (!chAck.written() || chAck.valueLength() < 8) return;
   const uint8_t* v = chAck.value();
-  uint32_t lastT = get32(v);
+  uint32_t lastMin = get32(v);
   uint32_t lastSeq = get32(v + 4);
 
   int n = 0;
-  while (n < minCount && minBuf[n].t_ms <= lastT) n++;
+  while (n < minCount && minBuf[n].seq <= lastMin) n++;
   dropMin(n);
 
   int m = 0;
