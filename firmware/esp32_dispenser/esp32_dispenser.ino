@@ -278,10 +278,34 @@ static uint32_t collarNowMs() {
 }
 
 // 서버가 받아준 지점. 목줄에게 "여기까지 됐다" 고 알려줄 값이다.
+//
+// **어느 부팅의 값인지 같이 들고 있어야 한다.** 목줄이 재부팅하면 t_ms 가
+// 0 부터 다시 시작한다. 이전 부팅의 기준(예: 900000)을 그대로 두면 새 기록
+// (예: 60000)이 전부 '이미 받은 것' 으로 걸러진다. 조용히 버려지므로
+// 로그에도 안 남는다 - 실제로 그래서 재연결 뒤 아무것도 안 올라갔다.
+uint32_t ackBootId = 0;
 uint32_t ackMinTms = 0;
 uint32_t ackShakeSeq = 0;
 bool ackPending = false;
 NimBLERemoteCharacteristic* chAckRemote = nullptr;
+
+//: 재부팅을 알아챈 사실만 남긴다. 출력은 loop() 에서 한다 - 이 함수는
+//: BLE 콜백에서 불리고, 그건 NimBLE 태스크다.
+volatile uint32_t rebootFrom = 0;
+volatile bool rebootNoticed = false;
+
+/** 목줄이 다른 부팅이 되었으면 기준을 지운다. */
+static void syncAckBoot(uint32_t boot) {
+  if (boot == 0 || boot == ackBootId) return;
+  if (ackBootId != 0) {
+    rebootFrom = ackBootId;
+    rebootNoticed = true;
+  }
+  ackBootId = boot;
+  ackMinTms = 0;
+  ackShakeSeq = 0;
+  ackPending = false;
+}
 
 // --- 짝 맺기 ---------------------------------------------------------------
 //
@@ -359,6 +383,8 @@ static void onNow(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) 
   collarTms = rd32(data + 2);
   collarBootId = rd32(data + 6);
   collarTmsAt = millis();
+  // 1초 알림이 1분 요약보다 먼저 온다. 여기서 알아채면 요약이 걸러지지 않는다.
+  syncAckBoot(collarBootId);
 }
 
 /**
@@ -382,7 +408,8 @@ static void onMin(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) 
   // 목줄은 ack 를 못 받으면 다시 보낸다. 그걸 그대로 쌓으면 버퍼가
   // 사본으로 차서 새 기록이 들어갈 자리가 없어진다. 서버가 중복을
   // 막아주긴 하지만, 여기서 거르면 올릴 일 자체가 없다.
-  if (s.bootId == collarBootId && ackMinTms && s.t_ms <= ackMinTms) return;
+  syncAckBoot(s.bootId);
+  if (s.bootId == ackBootId && ackMinTms && s.t_ms <= ackMinTms) return;
   for (int i = 0; i < nSamples; i++) {
     if (samples[i].bootId == s.bootId && samples[i].t_ms == s.t_ms) return;
   }
@@ -416,7 +443,8 @@ static void onShake(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool
   e.conf   = data[12];
 
   // 재전송된 것은 받지 않는다 (onMin 과 같은 이유).
-  if (e.bootId == collarBootId && ackShakeSeq && e.seq <= ackShakeSeq) return;
+  syncAckBoot(e.bootId);
+  if (e.bootId == ackBootId && ackShakeSeq && e.seq <= ackShakeSeq) return;
   for (int i = 0; i < nShakes; i++) {
     if (shakes[i].bootId == e.bootId && shakes[i].seq == e.seq) return;
   }
@@ -506,6 +534,12 @@ static void serviceCollar() {
   if (collarFound && !collarConnected) connectCollar();
 
   // 1초 판정은 바뀔 때만 찍는다. 같은 줄이 초마다 쏟아지면 로그를 못 읽는다.
+  if (rebootNoticed) {
+    rebootNoticed = false;
+    Serial.printf("[짝] 목줄이 재부팅했습니다 (%lu → %lu) — 받은 기준을 지웁니다\n",
+                  (unsigned long)rebootFrom, (unsigned long)ackBootId);
+  }
+
   static int lastPrinted = -2;
   if (nowFresh) {
     nowFresh = false;
@@ -1227,7 +1261,7 @@ static void uploadCollar() {
 
   // **목줄에게 알려준다.** 서버에 들어간 뒤에만 보낸다 - 밥통이 받기만
   // 하고 알려주면, 밥통이 재부팅할 때 그 사이 기록이 사라진다.
-  if (boot == collarBootId) {
+  if (boot == ackBootId) {
     if (maxT > ackMinTms) ackMinTms = maxT;
     if (maxSeq > ackShakeSeq) ackShakeSeq = maxSeq;
     ackPending = true;
