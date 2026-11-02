@@ -31,10 +31,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.petcare.data.AxisScore
 import com.petcare.data.Dashboard
+import com.petcare.data.FeederStore
 import com.petcare.data.Loaded
 import com.petcare.data.Origin
 import com.petcare.data.MyDog
@@ -162,6 +164,9 @@ private fun Content(
     val rx = data.prescription
     var showTrace by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
+    var showFeeder by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val feederStore = remember { FeederStore(context.applicationContext) }
 
     // 활동 목표는 baseline(평소 수준)으로 잡는다.
     // 5kg 말티즈와 28kg 대형견에게 같은 걸음 수 목표를 들이대는 건 의미가 없다.
@@ -180,7 +185,7 @@ private fun Content(
 
         // --- 흰 면 ---------------------------------------------------------
         Tile(fill = T.canvas, verticalPadding = T.lg) {
-            Header(dog) { showSettings = true }
+            Header(dog, onFeeder = { showFeeder = true }, onSettings = { showSettings = true })
             Spacer(Modifier.height(T.sm))
             OriginBadge(loaded.origin == Origin.LIVE, loaded.note)
 
@@ -314,6 +319,10 @@ private fun Content(
         TraceSheet(rx = rx, onDismiss = { showTrace = false })
     }
 
+    if (showFeeder) {
+        FeederSheet(store = feederStore, onDismiss = { showFeeder = false })
+    }
+
     if (showSettings) {
         SettingsSheet(
             dog = dog,
@@ -327,7 +336,7 @@ private fun Content(
 // ---------------------------------------------------------------------------
 
 @Composable
-private fun Header(dog: MyDog, onSettings: () -> Unit) {
+private fun Header(dog: MyDog, onFeeder: () -> Unit, onSettings: () -> Unit) {
     Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Box(
             modifier = Modifier
@@ -343,6 +352,8 @@ private fun Header(dog: MyDog, onSettings: () -> Unit) {
             Text(dog.name, style = T.displayMd)
             Text(dog.subtitle, style = T.caption.copy(color = T.inkMuted48))
         }
+        UtilityButton(label = "밥통", onClick = onFeeder)
+        Spacer(Modifier.width(T.xs))
         UtilityButton(label = "설정", onClick = onSettings)
     }
 }
