@@ -46,6 +46,11 @@ desktop.ini
 *.key
 secrets.json
 
+# ESP32 스케치는 저장소에 올라간다. Wi-Fi 비밀번호와 기기 토큰을
+# .ino 에 적으면 그대로 Public 에 올라간다. 별도 헤더로 빼고 막는다.
+#   cp firmware/secrets.example.h firmware/esp32_spin/secrets.h
+secrets.h
+
 # --- 기타 ---
 *.log
 
