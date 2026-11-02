@@ -2,6 +2,8 @@ package com.petcare.data
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.io.BufferedReader
 import java.net.HttpURLConnection
@@ -143,6 +145,98 @@ object Net {
     } catch (_: Exception) {
         false
     }
+
+    // -----------------------------------------------------------------------
+    // 밥통 — 서버를 거쳐 조작한다
+    //
+    // 앱이 ESP32 의 IP 로 직접 치면 같은 핫스팟에 있을 때만 된다.
+    // 서버에 명령을 쌓으면 밥통이 60초마다 가져가므로 집 밖에서도 되고,
+    // 앱이 꺼져 있어도 급여는 나간다.
+    // -----------------------------------------------------------------------
+
+    @Serializable
+    data class FeederMinute(
+        @SerialName("rest_s") val restS: Int = 0,
+        @SerialName("walk_s") val walkS: Int = 0,
+        @SerialName("run_s") val runS: Int = 0,
+        @SerialName("shake_n") val shakeN: Int = 0,
+    )
+
+    /** 밥통이 마지막으로 보고한 자기 상태. */
+    @Serializable
+    data class FeederDeviceState(
+        val busy: Boolean = false,
+        @SerialName("last_job") val lastJob: String = "",
+        @SerialName("collar_connected") val collarConnected: Boolean = false,
+        /** rest / walk / run / body_shake. 빈 문자열이면 아직 판정이 없다. */
+        @SerialName("collar_class") val collarClass: String = "",
+        @SerialName("collar_conf") val collarConf: Double = 0.0,
+        val minute: FeederMinute = FeederMinute(),
+    )
+
+    @Serializable
+    data class FeederAck(
+        val id: String = "",
+        val state: String = "",
+        val result: String = "",
+    )
+
+    /**
+     * 앱의 밥통 화면이 읽는 값.
+     *
+     * `online` 이 거짓이면 밥통이 보고를 끊은 것이다. 그래도 버튼은 눌린다 —
+     * 명령은 쌓이고, 10분 안에 깨면 실행된다.
+     */
+    @Serializable
+    data class FeederView(
+        val online: Boolean = false,
+        @SerialName("age_s") val ageS: Int? = null,
+        val state: FeederDeviceState? = null,
+        val pending: Int = 0,
+        @SerialName("last_ack") val lastAck: FeederAck? = null,
+    )
+
+    suspend fun feeder(
+        base: String, dogId: String, token: String = "",
+    ): FeederView = json.decodeFromString(
+        request("$base/v1/dogs/$dogId/feeder", token = token)
+    )
+
+    /**
+     * 수동 급여를 서버에 쌓는다.
+     *
+     * [pellets] 는 슬롯 -> 알 수. 사료는 슬롯이 아니라 [foodG] 로 따로 보낸다 —
+     * 알은 세는 것이고 사료는 재는 것이라 단위가 다르다.
+     *
+     * [requestId] 는 버튼 한 번에 하나다. 응답을 못 받아 다시 보낼 때
+     * **같은 값을 써야** 두 번 나가지 않는다.
+     */
+    suspend fun dispense(
+        base: String,
+        dogId: String,
+        pellets: Map<Int, Int>,
+        foodG: Double = 0.0,
+        requestId: String = "",
+        token: String = "",
+    ): String {
+        val body = buildString {
+            append("""{"pellets":{""")
+            append(pellets.entries.joinToString(",") { (slot, n) -> """"$slot":$n""" })
+            append("""},"food_g":$foodG""")
+            append(""","request_id":"${requestId.escape()}"}""")
+        }
+        return request("$base/v1/dogs/$dogId/dispense", "POST", body, token)
+    }
+
+    /**
+     * 아직 안 가져간 명령을 취소한다.
+     *
+     * **진행 중인 배출은 못 멈춘다.** 밥통이 이미 가져간 명령에는 손이 닿지
+     * 않는다. 그건 같은 핫스팟에서 밥통에 직접 쳐야 한다.
+     */
+    suspend fun cancelDispense(
+        base: String, dogId: String, token: String = "",
+    ): String = request("$base/v1/dogs/$dogId/dispense/cancel", "POST", "{}", token)
 
     private fun String.escape(): String =
         replace("\\", "\\\\").replace("\"", "\\\"")

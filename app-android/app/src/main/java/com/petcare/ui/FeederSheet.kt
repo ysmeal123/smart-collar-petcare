@@ -30,60 +30,82 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.petcare.data.Feeder
 import com.petcare.data.FeederStore
+import com.petcare.data.MyDog
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
- * 밥통 직접 제어.
+ * 밥통 제어. **경로가 둘이다.**
  *
- * 슬롯마다 수량을 정하고 [배출]을 누르면 ESP32 가 그 모터만 돌린다.
- * 서버를 거치지 않는다 — 같은 핫스팟 안에서 바로 명령한다.
+ *     서버 경유   명령을 서버에 쌓고 밥통이 60초 안에 가져간다 (기본)
+ *     직접        같은 핫스팟의 ESP32 에 바로 쳐서 1초 안에 돈다 (시연용)
  *
- * 화면이 떠 있는 동안 1초마다 /status 를 읽는다. 배출 버튼의 활성 여부와
- * 진행 표시가 전부 그 값에서 나온다. 앱이 "돌고 있을 것" 이라고 추측하지 않는다.
+ * 슬롯마다 수량을 정하고 [배출]을 누르면 그 모터만 돈다.
+ *
+ * 화면이 떠 있는 동안 상태를 읽어서 버튼 활성 여부와 진행 표시를 전부
+ * 그 값에서 낸다. **앱이 "돌고 있을 것" 이라고 추측하지 않는다.**
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun FeederSheet(store: FeederStore, onDismiss: () -> Unit) {
+fun FeederSheet(store: FeederStore, dog: MyDog, onDismiss: () -> Unit) {
     val state = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val scope = rememberCoroutineScope()
 
     var base by remember { mutableStateOf(store.base) }
     var editing by remember { mutableStateOf(base) }
+    var route by remember { mutableStateOf(store.route) }
     var status by remember { mutableStateOf<Feeder.Status?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var message by remember { mutableStateOf<String?>(null) }
 
+    val link = Feeder.Link(
+        route = route,
+        direct = base,
+        serverBase = dog.serverBase,
+        serverDogId = dog.serverDogId,
+        serverToken = dog.serverToken,
+    )
+
     // 상태를 아직 못 받았을 때 보여줄 기본값. 펌웨어 SLOTS[] 와 같은 순서.
+    //
+    // 4번은 **그램**이다. 서버가 사료를 food_g 로 다루므로 앱도 같은 단위를
+    // 쓴다 - 경로마다 단위가 다르면 보호자가 틀린 양을 넣는 날이 온다.
     val fallback = remember {
         listOf(
             Feeder.Slot(1, "omega3", "오메가3", "알", 10),
             Feeder.Slot(2, "skin_barrier", "피부장벽", "알", 10),
             Feeder.Slot(3, "joint", "관절", "알", 10),
-            Feeder.Slot(4, "food", "사료", "회", 30),
+            Feeder.Slot(4, "food", "사료", "g", 300),
         )
     }
-    val counts = remember { mutableStateListOf(1, 1, 1, 1) }
+    val counts = remember { mutableStateListOf(1, 1, 1, 40) }
 
-    LaunchedEffect(base) {
+    // 서버 경유는 밥통이 60초마다 보고하므로 1초마다 물어볼 이유가 없다.
+    val pollMs = if (link.viaServer) 5_000L else 1_000L
+
+    LaunchedEffect(base, route) {
         status = null
         error = null
         while (isActive) {
             try {
-                status = Feeder.status(base)
+                status = Feeder.status(link)
                 error = null
             } catch (e: Feeder.Failed) {
                 status = null
                 error = e.message
             }
-            delay(1_000)
+            delay(pollMs)
         }
     }
 
     val slots = status?.slots?.takeIf { it.isNotEmpty() } ?: fallback
     val connected = status != null
     val busy = status?.busy == true
+
+    // 서버 경유는 밥통이 꺼져 있어도 명령을 쌓을 수 있다. 버튼을 막으면
+    // 보호자가 할 수 있는 일이 없어진다 — 10분 안에 깨면 실행된다.
+    val canSend = (link.viaServer || connected) && !busy
 
     fun send(block: suspend () -> Unit, okText: String) {
         scope.launch {
@@ -105,7 +127,18 @@ fun FeederSheet(store: FeederStore, onDismiss: () -> Unit) {
         Column(modifier = Modifier.fillMaxWidth().padding(horizontal = T.gutter)) {
             Text("밥통", style = T.displayMd)
             Spacer(Modifier.height(T.xxs))
-            ConnectionLine(connected, busy, status, error)
+            ConnectionLine(connected, busy, status, error, link.viaServer)
+
+            Spacer(Modifier.height(T.md))
+            RouteToggle(
+                route = route,
+                canServer = dog.serverBase.isNotBlank() && dog.serverDogId.isNotBlank(),
+                onPick = { r ->
+                    route = r
+                    store.route = r
+                    message = null
+                },
+            )
 
             if (connected) {
                 Spacer(Modifier.height(T.md))
@@ -116,15 +149,25 @@ fun FeederSheet(store: FeederStore, onDismiss: () -> Unit) {
 
             // --- 슬롯 ---------------------------------------------------------
             slots.forEachIndexed { i, s ->
+                // 사료는 그램이라 1씩 올리면 300까지 300번을 눌러야 한다.
+                val step = if (s.slot == Feeder.FOOD_SLOT) 10 else 1
                 SlotRow(
                     slot = s,
                     count = counts.getOrElse(i) { 1 },
+                    step = step,
                     onCount = { c -> if (i < counts.size) counts[i] = c.coerceIn(1, s.max) },
-                    enabled = connected && !busy,
+                    enabled = canSend,
                     progress = if (busy && s.requested > 0) "${s.done}/${s.requested}" else null,
                     onDispense = {
                         val c = counts.getOrElse(i) { 1 }
-                        send({ Feeder.dispense(base, s.slot, c) }, "${s.name} ${c}${s.unit} 배출 시작")
+                        // 버튼 한 번에 키 하나. 같은 눌림이 두 번 나가지 않게
+                        // 서버가 이 값으로 걸러낸다.
+                        val req = "btn-${s.slot}-${System.currentTimeMillis()}"
+                        send(
+                            { Feeder.dispense(link, s.slot, c, req) },
+                            if (link.viaServer) "${s.name} ${c}${s.unit} — 밥통이 1분 안에 가져갑니다"
+                            else "${s.name} ${c}${s.unit} 배출 시작",
+                        )
                     },
                 )
                 Spacer(Modifier.height(T.xs))
@@ -132,10 +175,27 @@ fun FeederSheet(store: FeederStore, onDismiss: () -> Unit) {
 
             Spacer(Modifier.height(T.xs))
             GhostPill(
-                label = "정지",
+                label = if (link.viaServer) "대기 중인 명령 취소" else "정지",
                 modifier = Modifier.fillMaxWidth(),
-                onClick = { send({ Feeder.stop(base) }, "정지 요청을 보냈습니다") },
+                onClick = {
+                    scope.launch {
+                        message = try {
+                            Feeder.stop(link)
+                        } catch (e: Feeder.Failed) {
+                            e.message
+                        }
+                    }
+                },
             )
+
+            if (link.viaServer && (status?.pending ?: 0) > 0) {
+                Spacer(Modifier.height(T.xs))
+                Text(
+                    "아직 밥통이 안 가져간 명령 ${status?.pending}건. " +
+                        "10분이 지나면 저절로 사라집니다.",
+                    style = T.finePrint,
+                )
+            }
 
             message?.let {
                 Spacer(Modifier.height(T.sm))
@@ -143,9 +203,12 @@ fun FeederSheet(store: FeederStore, onDismiss: () -> Unit) {
             }
 
             // --- 주소 ---------------------------------------------------------
+            //
+            // 직접 경로에서만 쓴다. 서버 경유일 때는 서버가 밥통을 찾으므로
+            // 주소를 알 필요가 없다.
             Spacer(Modifier.height(T.lg))
             Column(modifier = Modifier.fillMaxWidth().utilityCard()) {
-                Text("밥통 주소", style = T.captionStrong)
+                Text("밥통 주소 (직접 경로)", style = T.captionStrong)
                 Spacer(Modifier.height(T.xxs))
                 Text(
                     "ESP32 시리얼 로그에 찍힌 주소입니다. 폰이 같은 핫스팟에 연결돼 있어야 합니다.",
@@ -181,10 +244,18 @@ private fun ConnectionLine(
     busy: Boolean,
     status: Feeder.Status?,
     error: String?,
+    viaServer: Boolean,
 ) {
+    // 서버 경유에서는 '연결' 이 두 겹이다 - 앱↔서버, 그리고 밥통↔서버.
+    // 서버는 붙었는데 밥통이 자고 있는 상태를 뭉개면 안 된다.
+    val online = status?.ok == true
     val (dot, text) = when {
         busy -> T.primary to "배출 중"
-        connected -> T.primary to "연결됨 · 신호 ${status?.rssi ?: 0}dBm"
+        viaServer && connected && online ->
+            T.primary to "서버 경유 · 밥통이 ${status?.ageS ?: 0}초 전에 보고"
+        viaServer && connected ->
+            T.attention to "서버는 붙었지만 밥통이 보고를 끊었습니다"
+        connected -> T.primary to "직접 연결 · 신호 ${status?.rssi ?: 0}dBm"
         error != null -> T.critical to error
         else -> T.inkMuted48 to "연결 확인 중…"
     }
@@ -192,6 +263,43 @@ private fun ConnectionLine(
         Box(Modifier.size(8.dp).background(dot, T.pill))
         Spacer(Modifier.width(T.xs))
         Text(text, style = T.caption.copy(color = T.inkMuted48))
+    }
+}
+
+/**
+ * 경로 전환.
+ *
+ * 서버 설정이 없으면 서버 쪽을 고를 수 없다. 고르게 해두면 아무것도
+ * 안 되는 화면을 보게 되는데, **왜 안 되는지가 화면에 없다.**
+ */
+@Composable
+private fun RouteToggle(route: String, canServer: Boolean, onPick: (String) -> Unit) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(horizontalArrangement = Arrangement.spacedBy(T.xs)) {
+            OptionChip(
+                label = "서버 경유",
+                selected = route == Feeder.VIA_SERVER && canServer,
+                // 서버 설정이 없으면 눌러도 안 바꾼다. 바꿔두면 아무것도 안
+                // 되는 화면이 되고, 왜 안 되는지는 아래 문장에만 있다.
+                onClick = { if (canServer) onPick(Feeder.VIA_SERVER) },
+            )
+            OptionChip(
+                label = "직접",
+                selected = route == Feeder.VIA_DIRECT || !canServer,
+                onClick = { onPick(Feeder.VIA_DIRECT) },
+            )
+        }
+        Spacer(Modifier.height(T.xxs))
+        Text(
+            when {
+                !canServer -> "설정에서 서버 주소를 넣으면 서버 경유를 쓸 수 있습니다."
+                route == Feeder.VIA_SERVER ->
+                    "명령을 서버에 맡깁니다. 집 밖에서도 되고, 밥통이 1분 안에 가져갑니다."
+                else ->
+                    "같은 핫스팟의 밥통에 바로 보냅니다. 1초 안에 돌지만 밖에서는 안 됩니다."
+            },
+            style = T.finePrint,
+        )
     }
 }
 
@@ -219,7 +327,12 @@ private fun CollarCard(collar: Feeder.Collar?) {
         if (collar != null && collar.fresh) {
             Spacer(Modifier.height(T.xs))
             Row(verticalAlignment = Alignment.Bottom) {
-                Text("지금 ", style = T.caption.copy(color = T.inkMuted48))
+                // 서버 경유면 최대 1분 지난 값이다. "지금" 이라고 적으면
+                // 거짓이 된다 - 몇 초 전인지 그대로 쓴다.
+                Text(
+                    if (collar.age > 5) "${collar.age}초 전 " else "지금 ",
+                    style = T.caption.copy(color = T.inkMuted48),
+                )
                 Text(collar.behavior ?: "-", style = T.displayMd)
                 Spacer(Modifier.width(T.xs))
                 Text("${collar.conf}%", style = T.caption.copy(color = T.inkMuted48))
@@ -241,6 +354,7 @@ private fun CollarCard(collar: Feeder.Collar?) {
 private fun SlotRow(
     slot: Feeder.Slot,
     count: Int,
+    step: Int,
     onCount: (Int) -> Unit,
     enabled: Boolean,
     progress: String?,
@@ -257,14 +371,14 @@ private fun SlotRow(
                 style = T.finePrint,
             )
         }
-        CircularIconButton(glyph = "−", onClick = { onCount(count - 1) })
+        CircularIconButton(glyph = "−", onClick = { onCount(count - step) })
         Text(
             "$count${slot.unit}",
             style = T.bodyStrong,
             textAlign = TextAlign.Center,
-            modifier = Modifier.widthIn(min = 44.dp),
+            modifier = Modifier.widthIn(min = 52.dp),
         )
-        CircularIconButton(glyph = "+", onClick = { onCount(count + 1) })
+        CircularIconButton(glyph = "+", onClick = { onCount(count + step) })
         Spacer(Modifier.width(T.xs))
         PrimaryPill(label = "배출", enabled = enabled, onClick = onDispense)
     }
