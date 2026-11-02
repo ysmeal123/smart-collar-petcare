@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import json
 
@@ -520,3 +520,179 @@ def device_status() -> dict:
             "SELECT serial, dog_id, fw_version, battery, last_seen FROM collars"
         ).fetchall()
         return {"collars": [dict(r) for r in rows]}
+
+
+# ---------------------------------------------------------------------------
+# 밥통 — 앱이 서버를 거쳐 조작한다
+#
+# 앱은 밥통에 직접 붙지 않는다. 둘 다 서버하고만 말한다.
+#
+#     앱  --POST /dogs/{id}/dispense-->  서버  <--GET /feeder/{id}/commands--  밥통
+#     앱  <--GET  /dogs/{id}/feeder---   서버  <--POST /feeder/{id}/state----  밥통
+#
+# 직접 붙이면 같은 Wi-Fi 에 있을 때만 되고, 집 밖에서는 못 쓴다.
+# 서버를 거치면 밥통이 잠깬 뒤에 받아가므로 **앱이 켜져 있지 않아도 된다.**
+# ---------------------------------------------------------------------------
+
+#: 수동 급여 명령의 수명. 예약 급여(2시간)보다 짧다.
+#:
+#: 밥통이 꺼져 있는 동안 누른 버튼이 **세 시간 뒤에 실행되면 안 된다.**
+#: 그때 보호자는 이미 손으로 줬다. 지나간 요청은 조용히 사라지는 게 맞다.
+MANUAL_TTL = timedelta(minutes=10)
+
+#: 밥통이 이 시간 안에 보고했으면 '연결됨' 으로 본다.
+#: 폴링 주기(60초)의 세 배. 한 번 놓쳐도 끊겼다고 하지 않는다.
+FEEDER_ONLINE = timedelta(minutes=3)
+
+
+class ManualDispense(BaseModel):
+    """
+    앱에서 누른 수동 급여.
+
+    **처방을 바꾸지 않는다.** 이건 "지금 한 번 주기" 이고, 계획·용량은
+    그대로다. 수동으로 더 준 것이 다음 처방을 늘리는 경로가 되면
+    '영양제를 많이 팔수록 매출이 는다' 는 이해상충이 그대로 들어온다.
+    """
+
+    #: 슬롯 -> 알 수. 장착되지 않은 슬롯은 거부한다.
+    pellets: dict[int, int] = Field(default_factory=dict)
+    #: 사료 그램. 0 이면 사료는 안 나간다.
+    food_g: float = Field(default=0.0, ge=0.0, le=500.0)
+    #: 앱이 버튼 한 번에 하나씩 만드는 멱등키.
+    #:
+    #: 응답을 못 받으면 앱은 재시도한다. 그때 **같은 키를 다시 보내야**
+    #: 두 번 나가지 않는다. 비워 보내면 서버가 매번 새 키를 만들고,
+    #: 재시도 보호는 아래의 '대기 중 명령' 검사에만 의존한다.
+    request_id: str = Field(default="", max_length=64)
+
+
+class FeederStateIn(BaseModel):
+    """밥통이 올리는 현재 상태. 이력이 아니라 지금 값이다."""
+
+    busy: bool = False
+    last_job: str = ""
+    collar_connected: bool = False
+    #: rest / walk / run / body_shake. 빈 문자열이면 아직 판정이 없다.
+    collar_class: str = ""
+    collar_conf: float = Field(default=0.0, ge=0.0, le=1.0)
+    #: 직전 1분 요약 {rest_s, walk_s, run_s, shake_n}
+    minute: dict[str, int] = Field(default_factory=dict)
+
+
+@router.post("/dogs/{dog_id}/dispense", dependencies=[Depends(require_app)])
+def manual_dispense(dog_id: str, body: ManualDispense) -> dict:
+    """
+    앱 버튼 -> 서버에 명령을 쌓는다. 밥통이 폴링해서 가져간다.
+
+    예약 급여와 **같은 모양의 명령**을 넣는다. 밥통에 코드가 두 벌
+    생기면 한쪽만 고치는 사고가 난다.
+    """
+    from core.constants import CARTRIDGE_BY_ID, CARTRIDGES, LOADED_SLOTS
+
+    by_slot = {c.slot: c for c in CARTRIDGES}
+
+    pellets = []
+    for slot, count in body.pellets.items():
+        if count == 0:
+            continue
+        if slot not in LOADED_SLOTS:
+            raise HTTPException(422, f"{slot}번 슬롯에는 로더가 없습니다")
+        spec = by_slot.get(slot)
+        if spec is None:
+            raise HTTPException(422, f"{slot}번 슬롯에 해당하는 카트리지가 없습니다")
+        # 하루 상한을 한 번에 넘기지 못하게 막는다. 오타로 통이 비는 걸 막고,
+        # 수동 급여가 상한을 우회하는 구멍이 되지 않게 한다.
+        if not 0 < count <= spec.max_pellets_per_day:
+            raise HTTPException(
+                422,
+                f"{spec.name} 은 1~{spec.max_pellets_per_day}알까지입니다",
+            )
+        pellets.append({
+            "slot": slot, "cartridge_id": spec.id,
+            "name": spec.name, "count": count,
+        })
+
+    if not pellets and body.food_g <= 0:
+        raise HTTPException(422, "내보낼 것이 없습니다")
+
+    now = datetime.now()
+    with db.connect() as c:
+        if db.get_dog(c, dog_id) is None:
+            raise HTTPException(404, "등록되지 않은 개체입니다")
+
+        # **이미 대기 중인 명령이 있으면 받지 않는다.**
+        #
+        # 버튼을 두 번 누르거나, 밥통이 꺼진 동안 여러 번 누르면 깬 순간
+        # 전부 실행된다. 이중 급여는 사고다. 멱등키만으로는 초가 달라지면
+        # 통과하므로 여기서 한 번 더 막는다.
+        if db.count_pending(c, dog_id, now) > 0:
+            raise HTTPException(409, "아직 실행되지 않은 급여 명령이 있습니다")
+
+        payload = {
+            "food_g": round(body.food_g, 1),
+            "pellets": pellets,
+            # 밥통이 로그에 구분해 남긴다. 예약과 수동을 섞으면
+            # "왜 이 시각에 나갔나" 를 나중에 설명할 수 없다.
+            "source": "manual",
+        }
+        key = body.request_id.strip() or now.isoformat(timespec="microseconds")
+        cmd_id = f"{dog_id}:manual:{key}"
+        queued = db.queue_command(
+            c, cmd_id, dog_id,
+            scheduled=now, expires=now + MANUAL_TTL,
+            payload=json.dumps(payload, ensure_ascii=False),
+        )
+        c.commit()
+
+    if not queued:
+        raise HTTPException(409, "같은 요청이 이미 들어왔습니다")
+    return {"ok": True, "command_id": cmd_id, "expires_in_s": int(MANUAL_TTL.total_seconds())}
+
+
+@router.post("/feeder/{dog_id}/state", dependencies=[Depends(require_device)])
+def put_feeder_state(dog_id: str, body: FeederStateIn) -> dict:
+    """
+    밥통이 자기 상태를 올린다. 폴링할 때 같이 보내면 왕복이 하나로 줄어든다.
+
+    **행동 기록은 여기 쌓이지 않는다.** 그건 /ingest 로 가서 events 와
+    status_samples 에 들어간다. 여기 있는 건 화면에 띄울 현재값뿐이고,
+    사라져도 복구할 필요가 없다.
+    """
+    with db.connect() as c:
+        if db.get_dog(c, dog_id) is None:
+            raise HTTPException(404, "등록되지 않은 개체입니다")
+        db.save_feeder_state(
+            c, dog_id, body.model_dump_json(), datetime.now()
+        )
+        c.commit()
+    return {"ok": True}
+
+
+@router.get("/dogs/{dog_id}/feeder", dependencies=[Depends(require_app)])
+def feeder_view(dog_id: str) -> dict:
+    """
+    앱의 [밥통] 화면이 읽는다.
+
+    `online` 이 거짓이면 밥통이 보고를 끊은 것이다. **그때 버튼을 눌러도
+    명령은 쌓인다** - 10분 안에 깨면 실행되고, 아니면 만료된다.
+    화면에는 그 사실을 그대로 보여주는 게 맞다.
+    """
+    now = datetime.now()
+    with db.connect() as c:
+        if db.get_dog(c, dog_id) is None:
+            raise HTTPException(404, "등록되지 않은 개체입니다")
+
+        got = db.feeder_state(c, dog_id)
+        state: dict = {}
+        age_s = None
+        if got is not None:
+            seen, state = got
+            age_s = int((now - seen).total_seconds())
+
+        return {
+            "online": age_s is not None and age_s <= FEEDER_ONLINE.total_seconds(),
+            "age_s": age_s,
+            "state": state,
+            "pending": db.count_pending(c, dog_id, now),
+            "last_ack": db.last_acked_command(c, dog_id),
+        }

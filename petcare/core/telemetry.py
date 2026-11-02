@@ -63,7 +63,10 @@ class CollarStatus(BaseModel):
     t_ms: int = Field(ge=0)
     worn_sec: int = Field(ge=0, le=60, description="직전 1분 중 착용 상태였던 초")
     steps: int = Field(ge=0, description="직전 1분 걸음 수. 보수계가 직접 센다")
-    battery: int = Field(ge=0, le=100)
+    # 목줄이 아직 배터리를 보고하지 않을 수 있다 (시험용 XIAO 펌웨어).
+    # 비워 보내면 DB 는 COALESCE 로 **직전 값을 지킨다** - 0 으로 쓰면
+    # 화면에 배터리 없음으로 뜨는데, 모르는 것과 비어 있는 것은 다르다.
+    battery: int | None = Field(default=None, ge=0, le=100)
 
     # --- Model A 출력. 네 값의 합이 60을 넘지 않는다 ---
     rest_sec: int = Field(default=0, ge=0, le=60)

@@ -180,6 +180,19 @@ CREATE TABLE IF NOT EXISTS dispense_commands (
     result     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_cmd ON dispense_commands(dog_id, state);
+
+-- 밥통이 스스로 보고하는 현재 상태. **개체당 한 줄만 둔다.**
+--
+-- 앱이 ESP32 에 직접 붙지 않고도 "지금 돌고 있나", "목줄이 붙어 있나" 를
+-- 볼 수 있어야 한다. 이력이 아니라 지금 상태이므로 덮어쓴다.
+--
+-- 행동 기록은 여기 쌓지 않는다 - 그건 events / status_samples 로 간다.
+-- 여기 있는 것은 화면에 띄울 현재값뿐이고, 사라져도 복구할 필요가 없다.
+CREATE TABLE IF NOT EXISTS feeder_state (
+    dog_id     TEXT PRIMARY KEY,
+    updated_at TEXT NOT NULL,
+    payload    TEXT NOT NULL
+);
 """
 
 
@@ -552,6 +565,47 @@ def pending_commands(c: Conn, dog_id: str, now: datetime) -> list[dict]:
         {"id": r["id"], "scheduled": r["scheduled"], **json.loads(r["payload"])}
         for r in rows
     ]
+
+
+def last_acked_command(c: Conn, dog_id: str) -> dict | None:
+    """가장 최근에 실행이 보고된 명령. 앱이 "방금 나갔다" 를 보여주는 데 쓴다."""
+    r = c.execute(
+        "SELECT id, scheduled, state, result FROM dispense_commands "
+        "WHERE dog_id=? AND state!='pending' ORDER BY scheduled DESC LIMIT 1",
+        (dog_id,),
+    ).fetchone()
+    return dict(r) if r else None
+
+
+def count_pending(c: Conn, dog_id: str, now: datetime) -> int:
+    """아직 실행되지 않고 살아 있는 명령 수."""
+    # 컬럼명을 붙인다. 행이 dict 로 오는 백엔드에서 [0] 은 안 통한다.
+    r = c.execute(
+        "SELECT COUNT(*) AS n FROM dispense_commands "
+        "WHERE dog_id=? AND state='pending' AND expires_at > ?",
+        (dog_id, now.isoformat()),
+    ).fetchone()
+    return int(r["n"])
+
+
+def save_feeder_state(c: Conn, dog_id: str, payload: str, now: datetime) -> None:
+    """밥통의 현재 상태를 덮어쓴다."""
+    c.execute(
+        "INSERT INTO feeder_state(dog_id, updated_at, payload) VALUES(?,?,?) "
+        "ON CONFLICT(dog_id) DO UPDATE SET updated_at=excluded.updated_at, "
+        "payload=excluded.payload",
+        (dog_id, now.isoformat(timespec="seconds"), payload),
+    )
+
+
+def feeder_state(c: Conn, dog_id: str) -> tuple[datetime, dict] | None:
+    """(보고 시각, 상태). 한 번도 보고가 없으면 None."""
+    r = c.execute(
+        "SELECT updated_at, payload FROM feeder_state WHERE dog_id=?", (dog_id,)
+    ).fetchone()
+    if r is None:
+        return None
+    return datetime.fromisoformat(r["updated_at"]), json.loads(r["payload"])
 
 
 def ack_command(c: Conn, cmd_id: str, state: str, result: str) -> None:
