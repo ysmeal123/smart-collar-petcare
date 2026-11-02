@@ -94,7 +94,13 @@ class IngestBatch(BaseModel):
     """
 
     collar_serial: str
-    boot_id: int = Field(description="부팅할 때마다 증가. t_ms의 기준점을 식별한다")
+    #: 부팅할 때마다 바뀐다. t_ms 의 기준점을 식별한다.
+    #:
+    #: **상한이 있다.** DB 의 boot_id 는 32비트 부호있는 정수다. 32비트
+    #: 전체를 쓰는 기기가 보내면 PostgreSQL 이 범위 초과로 거절하고 서버는
+    #: 500 을 낸다. 여기서 막으면 422 로 **이유가 적힌** 응답이 간다.
+    #: 500 은 기기 쪽에서 원인을 알 방법이 없다.
+    boot_id: int = Field(ge=0, le=2**31 - 1)
     uptime_ms: int = Field(ge=0, description="게이트웨이가 이 묶음을 만든 시점의 t_ms")
     received_at: datetime = Field(description="게이트웨이의 실시각. 시계 환산의 기준")
     fw_version: str = ""

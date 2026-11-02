@@ -34,6 +34,7 @@
  *   POST /meal       s1=N s2=N s3=N s4=N  한 끼 전체를 순서대로
  *   POST /stop                            진행 중인 배출을 다음 단위에서 멈춤
  *   POST /calibrate  slot=1..4 steps=N    펄스 수를 직접 지정 (양 보정용)
+ *   POST /unpair                          맺어둔 목줄을 잊는다
  *
  * 배출은 요청을 받자마자 응답(202)하고 loop() 에서 실행한다.
  * 사료를 길게 돌리면 수십 초가 걸려 HTTP 가 타임아웃 나기 때문이다.
@@ -89,12 +90,23 @@ const unsigned long POLL_MS = 60000;
 //: 여러 번 몰아서 보내도 서버가 (부팅ID, t_ms) 로 중복을 막는다.
 const unsigned long UPLOAD_MS = 60000;
 
-//: Wi-Fi 가 끊긴 동안 쌓아둘 양. 넘치면 **오래된 것부터 버린다.**
+//: 목줄에게서 받아 서버로 올리기까지 들고 있을 양.
 //:
-//: 최신 값이 더 쓸모 있다 - 지금 상태를 보여주는 게 먼저고, 지난 데이터는
-//: 어차피 추세용이다. 메모리가 터지면 둘 다 잃는다.
-const int MAX_SAMPLES = 30;
-const int MAX_EVENTS   = 60;
+//: 넘치면 **받지 않는다** (버리지 않는다). 목줄이 ack 를 못 받으니 나중에
+//: 다시 보낸다. 그래서 이 값은 '잃지 않을 양' 이 아니라 **'한 번에 얼마나
+//: 빨리 비울 수 있나'** 를 정한다.
+//:
+//: 30이었을 때는 1분에 30개씩만 넘어와서, 목줄에 하루치(1440개)가 밀려
+//: 있으면 비우는 데 48분이 걸렸다. 240이면 6분이다.
+//: 메모리는 240×16 + 480×16 ≈ 11KB — ESP32 에 충분하다.
+const int MAX_SAMPLES = 240;
+const int MAX_EVENTS   = 480;
+
+//: 버퍼가 이만큼 차면 60초를 기다리지 않고 바로 올린다.
+//:
+//: 밀린 것을 받는 중이라는 뜻이다. 그때 주기를 지키면 버퍼가 꽉 차서
+//: 목줄의 전송이 막힌다.
+const int UPLOAD_WHEN = MAX_SAMPLES / 2;
 
 // 검증된 펄스 모양 (esp32_spin 참고). HIGH 길게, LOW 짧게.
 const unsigned long HIGH_US = 1600;
@@ -188,6 +200,8 @@ const char* COLLAR_NAME = "pebble-collar";
 static NimBLEUUID UUID_SVC("19b10000-e8f2-537e-4f6c-d104768a1214");
 static NimBLEUUID UUID_NOW("19b10001-e8f2-537e-4f6c-d104768a1214");
 static NimBLEUUID UUID_MIN("19b10002-e8f2-537e-4f6c-d104768a1214");
+static NimBLEUUID UUID_SHK("19b10003-e8f2-537e-4f6c-d104768a1214");
+static NimBLEUUID UUID_ACK("19b10004-e8f2-537e-4f6c-d104768a1214");
 const char* BEHAVIOR_KO[4] = {"쉬기", "걷기", "뛰기", "털기"};
 
 NimBLEClient* collarClient = nullptr;
@@ -211,47 +225,112 @@ volatile bool minFresh = false;
 // 설계돼 있다 — ActivityClass(쉬기/걷기/뛰기) 는 1분 요약, BODY_SHAKE 는
 // 이벤트다. 여기서 모양만 맞춰 주면 집계·처방·대시보드가 그대로 돈다.
 
+// 시각과 부팅번호는 **목줄이 준 것을 그대로 쓴다.**
+//
+// 밥통이 받은 시각을 쓰면 안 된다. 목줄이 끊긴 동안 모아둔 것을 몰아서
+// 보내면 수백 건이 전부 '지금' 으로 찍히고, 그건 거짓이다.
 struct MinuteSample {
-  unsigned long t_ms;
-  uint16_t rest_s, walk_s, run_s;
+  uint32_t bootId;
+  uint32_t t_ms;
+  uint16_t rest_s, walk_s, run_s, shake_n;
 };
 
 struct ShakeEvent {
-  unsigned long t_ms;
-  uint8_t conf;          // 0~100
+  uint32_t bootId;
+  uint32_t seq;          // 목줄이 매긴다. 서버의 중복 제거 키다
+  uint32_t t_ms;
+  uint8_t  conf;         // 0~100
 };
 
 MinuteSample samples[MAX_SAMPLES];
 int nSamples = 0;
 ShakeEvent shakes[MAX_EVENTS];
 int nShakes = 0;
-uint32_t shakeSeq = 0;         // 부팅 후 단조 증가. 서버의 중복 제거 키다
 
-/** 오래된 것부터 버리고 뒤에 붙인다. */
-static void pushSample(unsigned long t, uint16_t r, uint16_t w, uint16_t run) {
-  if (nSamples >= MAX_SAMPLES) {
-    for (int i = 1; i < MAX_SAMPLES; i++) samples[i - 1] = samples[i];
-    nSamples = MAX_SAMPLES - 1;
-  }
-  samples[nSamples++] = {t, r, w, run};
+/**
+ * 뒤에 붙인다. **꽉 차면 받지 않는다** (버리지 않는다).
+ *
+ * 전에는 오래된 것부터 버렸다. 이제는 목줄이 ack 를 받을 때까지 들고
+ * 있으므로, 여기서 안 받으면 목줄이 나중에 다시 보낸다. 버리는 쪽은
+ * 데이터가 사라지고, 안 받는 쪽은 늦어질 뿐이다.
+ */
+static bool pushSample(const MinuteSample& s) {
+  if (nSamples >= MAX_SAMPLES) return false;
+  samples[nSamples++] = s;
+  return true;
 }
 
-static void pushShake(unsigned long t, uint8_t conf) {
-  if (nShakes >= MAX_EVENTS) {
-    for (int i = 1; i < MAX_EVENTS; i++) shakes[i - 1] = shakes[i];
-    nShakes = MAX_EVENTS - 1;
+static bool pushShake(const ShakeEvent& e) {
+  if (nShakes >= MAX_EVENTS) return false;
+  shakes[nShakes++] = e;
+  return true;
+}
+
+// 목줄의 지금 시각. ingest 의 uptime_ms 로 쓴다 - 서버가 이것과
+// received_at 으로 t_ms 를 실시각으로 환산한다.
+volatile uint32_t collarBootId = 0;
+volatile uint32_t collarTms = 0;
+volatile unsigned long collarTmsAt = 0;
+
+static uint32_t collarNowMs() {
+  if (collarTmsAt == 0) return 0;
+  return collarTms + (uint32_t)(millis() - collarTmsAt);
+}
+
+// 서버가 받아준 지점. 목줄에게 "여기까지 됐다" 고 알려줄 값이다.
+uint32_t ackMinTms = 0;
+uint32_t ackShakeSeq = 0;
+bool ackPending = false;
+NimBLERemoteCharacteristic* chAckRemote = nullptr;
+
+// --- 짝 맺기 ---------------------------------------------------------------
+//
+// 처음 붙은 목줄의 주소를 NVS 에 적어두고, 그 뒤로는 **그 기기에만** 붙는다.
+//
+// 그러지 않으면 `pebble-collar` 로 광고하는 아무 기기에나 붙는다. 발표장에
+// 다른 팀 목줄이 있으면 엉뚱한 개의 행동이 우리 개체로 올라간다. 조용히
+// 틀리는 종류의 사고다.
+//
+// BLE 본딩(암호화 페어링)까지 가지 않았다. 지금 막아야 하는 것은 '엉뚱한
+// 기기에 붙는 것' 이고 주소를 못 박으면 그건 해결된다. 본딩은 도청과
+// 위장을 막는 것이라 제품에서 할 일이다 - 목줄 데이터는 비밀이 아니고,
+// 위장으로 얻을 것도 없다.
+String pairedAddr = "";          // 비어 있으면 아직 안 맺음
+
+static void savePair(const String& addr) {
+  Preferences nvs;
+  nvs.begin("pebble", false);
+  nvs.putString("collar", addr);
+  nvs.end();
+  pairedAddr = addr;
+  Serial.printf("[짝] 목줄 %s 로 맺었습니다 (앞으로 이 기기에만 붙습니다)\n",
+                addr.c_str());
+}
+
+static void loadPair() {
+  Preferences nvs;
+  nvs.begin("pebble", true);
+  pairedAddr = nvs.getString("collar", "");
+  nvs.end();
+  if (pairedAddr.length()) {
+    Serial.printf("[짝] 맺어둔 목줄 %s\n", pairedAddr.c_str());
+  } else {
+    Serial.println("[짝] 아직 없습니다 — 처음 찾은 목줄과 맺습니다");
   }
-  shakes[nShakes++] = {t, conf};
 }
 
 class CollarScan : public NimBLEScanCallbacks {
   void onResult(const NimBLEAdvertisedDevice* d) override {
     if (collarFound) return;
-    if (d->isAdvertisingService(UUID_SVC) || d->getName() == COLLAR_NAME) {
-      collarAddr = d->getAddress();
-      collarFound = true;
-      NimBLEDevice::getScan()->stop();
-    }
+    if (!(d->isAdvertisingService(UUID_SVC) || d->getName() == COLLAR_NAME)) return;
+
+    String addr = d->getAddress().toString().c_str();
+    // 맺어둔 기기가 있으면 그것만 받는다.
+    if (pairedAddr.length() && pairedAddr != addr) return;
+
+    collarAddr = d->getAddress();
+    collarFound = true;
+    NimBLEDevice::getScan()->stop();
   }
 } collarScan;
 
@@ -262,19 +341,86 @@ class CollarClientCb : public NimBLEClientCallbacks {
   }
 } collarClientCb;
 
+static inline uint32_t rd32(const uint8_t* p) {
+  return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+         ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+static inline uint16_t rd16(const uint8_t* p) {
+  return (uint16_t)(p[0] | (p[1] << 8));
+}
+
 static void onNow(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) {
-  if (len < 2 || data[0] > 3) return;
+  if (len < 10 || data[0] > 3) return;
   nowCls = data[0];
   nowConf = data[1];
   nowAt = millis();
   nowFresh = true;
+  // 목줄의 시계. 이걸 알아야 모아둔 t_ms 를 실시각으로 환산할 수 있다.
+  collarTms = rd32(data + 2);
+  collarBootId = rd32(data + 6);
+  collarTmsAt = millis();
 }
 
+/**
+ * 1분 요약. **지금 것일 수도, 끊겼을 때 모아둔 것일 수도 있다.**
+ *
+ * 둘을 구분하지 않는다. 목줄이 실어 보낸 t_ms 를 그대로 쓰면 둘 다
+ * 제 시각에 꽂힌다. 화면에 띄울 '최근 1분' 만 따로 갱신한다.
+ */
 static void onMin(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) {
-  if (len < 8) return;
-  for (int i = 0; i < 4; i++) minVals[i] = data[i * 2] | (data[i * 2 + 1] << 8);
-  minAt = millis();
-  minFresh = true;
+  if (len < 16) return;
+  MinuteSample s;
+  s.bootId  = rd32(data);
+  s.t_ms    = rd32(data + 4);
+  s.rest_s  = rd16(data + 8);
+  s.walk_s  = rd16(data + 10);
+  s.run_s   = rd16(data + 12);
+  s.shake_n = rd16(data + 14);
+
+  // **이미 서버에 넣은 것은 받지 않는다.**
+  //
+  // 목줄은 ack 를 못 받으면 다시 보낸다. 그걸 그대로 쌓으면 버퍼가
+  // 사본으로 차서 새 기록이 들어갈 자리가 없어진다. 서버가 중복을
+  // 막아주긴 하지만, 여기서 거르면 올릴 일 자체가 없다.
+  if (s.bootId == collarBootId && ackMinTms && s.t_ms <= ackMinTms) return;
+  for (int i = 0; i < nSamples; i++) {
+    if (samples[i].bootId == s.bootId && samples[i].t_ms == s.t_ms) return;
+  }
+  if (!pushSample(s)) return;        // 자리가 없으면 안 받는다. 목줄이 다시 보낸다
+
+  // 화면에 띄울 '최근 1분' 은 **가장 최근 것만** 쓴다. 밀린 것을 받는
+  // 동안 옛 기록으로 덮으면 앱이 몇 시간 전 값을 지금이라고 보여준다.
+  static uint32_t shownT = 0;
+  if (s.t_ms >= shownT) {
+    shownT = s.t_ms;
+    minVals[0] = s.rest_s; minVals[1] = s.walk_s;
+    minVals[2] = s.run_s;  minVals[3] = s.shake_n;
+    minAt = millis();
+    minFresh = true;
+  }
+}
+
+/**
+ * 털기 하나. **목줄이 시각과 일련번호를 매겨 보낸다.**
+ *
+ * 전에는 밥통이 1초 알림의 전이에서 잡았다. 그러면 BLE 가 끊긴 동안의
+ * 털기는 아예 못 본다. 긁기는 피부축의 핵심 지표라서 빠지면 처방 근거가
+ * 통째로 약해진다.
+ */
+static void onShake(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) {
+  if (len < 13) return;
+  ShakeEvent e;
+  e.bootId = rd32(data);
+  e.seq    = rd32(data + 4);
+  e.t_ms   = rd32(data + 8);
+  e.conf   = data[12];
+
+  // 재전송된 것은 받지 않는다 (onMin 과 같은 이유).
+  if (e.bootId == collarBootId && ackShakeSeq && e.seq <= ackShakeSeq) return;
+  for (int i = 0; i < nShakes; i++) {
+    if (shakes[i].bootId == e.bootId && shakes[i].seq == e.seq) return;
+  }
+  pushShake(e);
 }
 
 static void startCollarScan() {
@@ -284,8 +430,18 @@ static void startCollarScan() {
   scan->setActiveScan(true);          // 이름은 스캔 응답에 실려 온다
   scan->setInterval(100);
   scan->setWindow(50);                // Wi-Fi 와 안테나를 나눠 쓰므로 절반만 듣는다
+
+  // **발견한 기기를 저장하지 않는다.** 콜백으로만 받는다.
+  //
+  // 기본값은 255개까지 쌓는다. 끝날 때까지 스캔하는 우리 방식에서는
+  // 주변 기기가 계속 누적돼 힙이 바닥난다. 실제로 목줄을 들고 2분 나가
+  // 있는 동안 터졌다 - NimBLEScan 의 new 가 실패하고 abort() 가 났다.
+  // 우리는 목줄 하나를 찾으면 끝이라 저장할 이유가 없다.
+  scan->setMaxResults(0);
+  scan->clearResults();
+
   scan->start(0, false, true);        // 찾을 때까지 계속
-  Serial.println("[BLE] 목줄 찾는 중…");
+  Serial.printf("[BLE] 목줄 찾는 중…  (빈 메모리 %u바이트)\n", ESP.getFreeHeap());
 }
 
 static void connectCollar() {
@@ -304,12 +460,39 @@ static void connectCollar() {
   NimBLERemoteService* svc = collarClient->getService(UUID_SVC);
   NimBLERemoteCharacteristic* chNow = svc ? svc->getCharacteristic(UUID_NOW) : nullptr;
   NimBLERemoteCharacteristic* chMin = svc ? svc->getCharacteristic(UUID_MIN) : nullptr;
+  NimBLERemoteCharacteristic* chShk = svc ? svc->getCharacteristic(UUID_SHK) : nullptr;
+  chAckRemote = svc ? svc->getCharacteristic(UUID_ACK) : nullptr;
   if (!chNow || !chNow->subscribe(true, onNow) || (chMin && !chMin->subscribe(true, onMin))) {
     Serial.println("[BLE] 목줄 서비스를 못 찾음 — 끊고 다시 찾습니다");
     collarClient->disconnect();
     return;                           // onDisconnect 가 다시 스캔하게 만든다
   }
+  // 털기와 ack 가 없으면 **반쪽만 동작한다** - 목줄이 모아둔 것을 비울 수
+  // 없어서 영원히 재전송한다. 몇 번은 다시 붙어본다.
+  //
+  // 실제로 크래시 뒤 재연결에서 이 둘만 못 찾은 적이 있다. 목줄 쪽에
+  // 끊기지 않은 연결이 남아 탐색이 반쪽만 된 것으로 보인다. 다시 붙으면
+  // 대개 해결된다.
+  static int halfTries = 0;
+  if (!chShk || !chAckRemote) {
+    if (++halfTries <= 3) {
+      Serial.printf("[BLE] 특성을 반만 찾았습니다 (%d/3) — 끊고 다시 붙습니다\n",
+                    halfTries);
+      collarClient->disconnect();
+      return;
+    }
+    Serial.println("[BLE] 털기·ack 특성을 못 찾습니다 — 구버전 목줄 펌웨어입니다");
+    Serial.println("      1분 요약은 받지만 모아둔 것은 비울 수 없습니다");
+  } else {
+    halfTries = 0;
+  }
+  if (chShk) chShk->subscribe(true, onShake);
   collarConnected = true;
+  // **여기서 맺는다.** 특성까지 다 확인된 뒤여야 한다. 광고만 보고 맺으면
+  // 이름만 흉내낸 기기에 못 박혀서 진짜 목줄을 못 찾게 된다.
+  if (pairedAddr.length() == 0) savePair(collarAddr.toString().c_str());
+  // 다시 붙었으면 밀린 것부터 온다. ack 는 서버에 올라간 뒤에 보낸다.
+  ackPending = (ackMinTms || ackShakeSeq);
   Serial.println("[BLE] 목줄 연결됨 — 1초마다 행동, 1분마다 요약을 받습니다");
 }
 
@@ -324,29 +507,19 @@ static void serviceCollar() {
 
   // 1초 판정은 바뀔 때만 찍는다. 같은 줄이 초마다 쏟아지면 로그를 못 읽는다.
   static int lastPrinted = -2;
-  static int lastCls = -1;
   if (nowFresh) {
     nowFresh = false;
     if (nowCls != lastPrinted) {
       lastPrinted = nowCls;
       Serial.printf("[목줄] %s %d%%\n", BEHAVIOR_KO[nowCls], nowConf);
     }
-    // **털기는 시작할 때만 한 번** 이벤트로 잡는다.
-    //
-    // 1분 요약의 '털기 N회' 를 쓰지 않는 이유는 시각이 없기 때문이다.
-    // 그걸로 이벤트를 만들려면 분 안의 어딘가로 **시각을 지어내야** 한다.
-    // 여기서 잡으면 알림이 온 그 시점이 실제 시각이고 신뢰도도 실제값이다.
-    if (nowCls == 3 && lastCls != 3) {
-      pushShake(nowAt, (uint8_t)nowConf);
-      shakeSeq++;
-    }
-    lastCls = nowCls;
   }
   if (minFresh) {
     minFresh = false;
-    Serial.printf("[목줄 1분] 쉬기 %u초 걷기 %u초 뛰기 %u초 털기 %u회\n",
-                  minVals[0], minVals[1], minVals[2], minVals[3]);
-    pushSample(minAt, minVals[0], minVals[1], minVals[2]);
+    // 털기는 여기서 세지 않는다. 목줄이 시각과 함께 따로 보낸다.
+    Serial.printf("[목줄 1분] 쉬기 %u초 걷기 %u초 뛰기 %u초 털기 %u회  (버퍼 %d/%d)\n",
+                  minVals[0], minVals[1], minVals[2], minVals[3],
+                  nSamples, nShakes);
   }
 }
 
@@ -450,6 +623,7 @@ static String statusJson() {
 
   // 목줄. age 는 마지막으로 받은 뒤 지난 초 (-1 = 아직 못 받음)
   unsigned long now = millis();
+  j += ",\"paired\":\"" + pairedAddr + "\"";
   j += ",\"collar\":{\"connected\":";
   j += collarConnected ? "true" : "false";
   j += ",\"cls\":" + String(nowCls);
@@ -585,6 +759,24 @@ static void runEnTest() {
   Serial.println("[EN 시험] 끝");
   busy = false;
 }
+
+/**
+ * 맺어둔 목줄을 잊는다. 목줄을 바꾸거나 다른 개로 옮길 때 쓴다.
+ *
+ * 못 박기만 해두고 푸는 길을 안 만들면, 목줄이 고장난 순간 밥통을
+ * 플래시까지 지워야 한다.
+ */
+static void handleUnpair() {
+  Preferences nvs;
+  nvs.begin("pebble", false);
+  nvs.remove("collar");
+  nvs.end();
+  pairedAddr = "";
+  Serial.println("[짝] 잊었습니다 — 다음에 찾은 목줄과 새로 맺습니다");
+  if (collarConnected && collarClient) collarClient->disconnect();
+  sendJson(200, "{\"ok\":true,\"paired\":\"\"}");
+}
+
 
 static void handleStop() {
   if (busy) stopReq = true;
@@ -931,19 +1123,42 @@ static void uploadCollar() {
     return;
   }
 
+  // **한 묶음은 부팅번호 하나다.** t_ms 의 기준점이 부팅마다 다르므로
+  // 섞어 보내면 환산이 틀어진다. 목줄이 재부팅했으면 두 번에 나눠 보낸다.
+  uint32_t boot = nSamples ? samples[0].bootId : shakes[0].bootId;
+  if (boot == 0) {
+    Serial.println("[서버] 목줄 부팅번호를 아직 모릅니다 — 보류");
+    return;
+  }
+
+  // 이 묶음의 uptime_ms 를 **먼저** 구한다. 목줄 시계를 모르면 가장 늦은
+  // t_ms 로 대신한다 - 그보다 과거일 수는 없다.
+  uint32_t maxT = 0, maxSeq = 0;
+  for (int i = 0; i < nSamples; i++)
+    if (samples[i].bootId == boot && samples[i].t_ms > maxT) maxT = samples[i].t_ms;
+  for (int i = 0; i < nShakes; i++)
+    if (shakes[i].bootId == boot) {
+      if (shakes[i].t_ms > maxT) maxT = shakes[i].t_ms;
+      if (shakes[i].seq > maxSeq) maxSeq = shakes[i].seq;
+    }
+  uint32_t up = collarNowMs();
+  if (up < maxT) up = maxT;
+
+  int nS = 0, nE = 0;
+
   String j = "{\"collar_serial\":\"" + String(COLLAR_SERIAL) + "\"";
-  j += ",\"boot_id\":" + String(bootId);
-  j += ",\"uptime_ms\":" + String(millis());
+  j += ",\"boot_id\":" + String(boot);
+  j += ",\"uptime_ms\":" + String(up);
   j += ",\"received_at\":\"" + now + "\"";
   j += ",\"fw_version\":\"esp32-dispenser-1\"";
 
   j += ",\"events\":[";
   for (int i = 0; i < nShakes; i++) {
-    if (i) j += ",";
-    // 일련번호는 버퍼 안의 자리가 아니라 **부팅 후 통산 번호**여야 한다.
-    // 자리를 쓰면 버퍼를 비운 뒤 0 부터 다시 시작해 전부 중복으로 버려진다.
-    uint32_t seq = shakeSeq - (uint32_t)(nShakes - i);
-    j += "{\"seq\":" + String(seq);
+    if (shakes[i].bootId != boot) continue;
+    if (nE++) j += ",";
+    // 일련번호는 목줄이 매긴다. 밥통이 세면 버퍼를 비운 뒤 0 으로 돌아가
+    // 전부 중복으로 버려진다.
+    j += "{\"seq\":" + String(shakes[i].seq);
     j += ",\"t_ms\":" + String(shakes[i].t_ms);
     j += ",\"type\":\"body_shake\"";
     j += ",\"conf\":" + String(shakes[i].conf / 100.0f, 2);
@@ -952,19 +1167,29 @@ static void uploadCollar() {
   }
   j += "],\"status\":[";
   for (int i = 0; i < nSamples; i++) {
-    if (i) j += ",";
     const MinuteSample& m = samples[i];
-    int worn = m.rest_s + m.walk_s + m.run_s;
-    if (worn > 60) worn = 60;
+    if (m.bootId != boot) continue;
+    if (nS++) j += ",";
+
+    // **합이 60을 넘으면 깎는다.** 목줄도 깎아서 보내지만, 구버전 펌웨어가
+    // 61을 보내면 서버가 묶음 전체를 422 로 거부한다. 한 표본 때문에
+    // 나머지가 다 막히는 건 손해가 너무 크다.
+    int r = m.rest_s, w = m.walk_s, ru = m.run_s;
+    while (r + w + ru > 60) {
+      if (r >= w && r >= ru)      r--;
+      else if (w >= ru)           w--;
+      else                        ru--;
+    }
+    int worn = r + w + ru;
     j += "{\"t_ms\":" + String(m.t_ms);
     // **착용 감지가 아니다.** 목줄이 그 분에 판정을 낸 초를 센 것이다.
     // 책상에 놓여 있어도 '쉬기' 로 나오므로 착용률로 오해하면 안 된다.
     j += ",\"worn_sec\":" + String(worn);
     // 보수계가 없다. 활동은 walk_sec/run_sec 으로만 올라간다.
     j += ",\"steps\":0";
-    j += ",\"rest_sec\":" + String(m.rest_s);
-    j += ",\"walk_sec\":" + String(m.walk_s);
-    j += ",\"run_sec\":" + String(m.run_s);
+    j += ",\"rest_sec\":" + String(r);
+    j += ",\"walk_sec\":" + String(w);
+    j += ",\"run_sec\":" + String(ru);
     // 모델에 '격렬' 클래스가 없다. 뛰기까지만 구분한다.
     j += ",\"vigorous_sec\":0}";
   }
@@ -972,12 +1197,54 @@ static void uploadCollar() {
 
   String out;
   int code = httpCall("POST", "/v1/ingest", j, out);
-  if (code == 200) {
-    Serial.printf("[서버] 목줄 업로드: 요약 %d개, 털기 %d개\n", nSamples, nShakes);
-    nSamples = 0;
-    nShakes = 0;
-  } else {
+  if (code != 200) {
     Serial.printf("[서버] 목줄 업로드 실패 (%d) — 모아뒀다 다시 보냅니다\n", code);
+    return;
+  }
+
+  // 올라간 것만 버린다. 다른 부팅번호의 기록은 다음 차례에 간다.
+  int keepS = 0;
+  for (int i = 0; i < nSamples; i++)
+    if (samples[i].bootId != boot) samples[keepS++] = samples[i];
+  nSamples = keepS;
+  int keepE = 0;
+  for (int i = 0; i < nShakes; i++)
+    if (shakes[i].bootId != boot) shakes[keepE++] = shakes[i];
+  nShakes = keepE;
+
+  // **서버가 센 숫자를 같이 찍는다.** 200 만 보고 넘어가면 '보냈다' 와
+  // '들어갔다' 를 구분할 수 없다. 중복이 걸러진 개수도 여기서 드러난다.
+  int acc = -1, dup = -1, st = -1;
+  {
+    float v;
+    if (jsonNumber(out, "accepted", 0, out.length(), v))       acc = (int)v;
+    if (jsonNumber(out, "duplicates", 0, out.length(), v))     dup = (int)v;
+    if (jsonNumber(out, "status_samples", 0, out.length(), v)) st  = (int)v;
+  }
+  Serial.printf("[서버] 목줄 업로드: 보냄 요약 %d·털기 %d  →  "
+                "서버 저장 요약 %d·털기 %d (중복 %d)  남음 %d/%d\n",
+                nS, nE, st, acc, dup, nSamples, nShakes);
+
+  // **목줄에게 알려준다.** 서버에 들어간 뒤에만 보낸다 - 밥통이 받기만
+  // 하고 알려주면, 밥통이 재부팅할 때 그 사이 기록이 사라진다.
+  if (boot == collarBootId) {
+    if (maxT > ackMinTms) ackMinTms = maxT;
+    if (maxSeq > ackShakeSeq) ackShakeSeq = maxSeq;
+    ackPending = true;
+  }
+}
+
+
+/** 목줄에게 "여기까지 서버에 들어갔다" 고 써 준다. */
+static void sendAck() {
+  if (!ackPending || !collarConnected || chAckRemote == nullptr) return;
+  uint8_t buf[8];
+  buf[0] = ackMinTms;       buf[1] = ackMinTms >> 8;
+  buf[2] = ackMinTms >> 16; buf[3] = ackMinTms >> 24;
+  buf[4] = ackShakeSeq;       buf[5] = ackShakeSeq >> 8;
+  buf[6] = ackShakeSeq >> 16; buf[7] = ackShakeSeq >> 24;
+  if (chAckRemote->writeValue(buf, 8, false)) {
+    ackPending = false;
   }
 }
 
@@ -1002,10 +1269,14 @@ static void serverCycle() {
     reportState();
     pollCommands();
   }
-  if (now - lastUpload >= UPLOAD_MS) {
+  // 주기가 되었거나, 밀린 것이 몰려와 버퍼가 반쯤 찼으면 올린다.
+  if (now - lastUpload >= UPLOAD_MS ||
+      nSamples >= UPLOAD_WHEN || nShakes >= MAX_EVENTS / 2) {
     lastUpload = now;
     uploadCollar();
   }
+  // 목줄은 ack 를 받을 때까지 들고 있다. 안 보내주면 영원히 다시 보낸다.
+  sendAck();
 }
 
 // ---------------------------------------------------------------------------
@@ -1061,10 +1332,12 @@ void setup() {
   server.on("/calibrate", HTTP_POST, handleCalibrate);
   server.on("/stop", HTTP_POST, handleStop);
   server.on("/entest", HTTP_GET, handleEnTest);
+  server.on("/unpair", HTTP_POST, handleUnpair);
   server.onNotFound([]() { sendError(404, "not found"); });
   server.begin();
   Serial.println("[HTTP] 80번 포트 대기");
 
+  loadPair();
   NimBLEDevice::init("pebble-feeder");
   startCollarScan();
 }

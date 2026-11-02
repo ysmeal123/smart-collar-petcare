@@ -273,3 +273,30 @@ def test_뒤늦게_도착한_과거_데이터도_제_시각에_꽂힌다():
     )
     events = to_behavior_events(late)
     assert events[0].ts == DAY + timedelta(hours=2)
+
+
+def test_부팅번호_상한():
+    """
+    DB 의 boot_id 는 32비트 부호있는 정수다.
+
+    32비트 전체를 쓰는 기기가 보내면 PostgreSQL 이 범위 초과로 거절하고
+    서버가 500 을 낸다. 기기는 500 만 보고는 원인을 알 수 없다.
+    **여기서 막아서 이유가 적힌 422 가 가게 한다.**
+
+    실제로 목줄 펌웨어가 32비트 난수를 쓰다가 절반의 확률로 업로드가
+    500 으로 떨어졌다. 로컬 SQLite 는 64비트라 안 걸리고 배포에서만 터졌다.
+    """
+    import pytest
+    from pydantic import ValidationError
+
+    ok = IngestBatch(
+        collar_serial="PBL-0001", boot_id=2**31 - 1, uptime_ms=0,
+        received_at=datetime(2026, 1, 1),
+    )
+    assert ok.boot_id == 2**31 - 1
+
+    with pytest.raises(ValidationError):
+        IngestBatch(
+            collar_serial="PBL-0001", boot_id=2**31, uptime_ms=0,
+            received_at=datetime(2026, 1, 1),
+        )
