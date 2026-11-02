@@ -159,6 +159,82 @@ VETO_STEMS: dict[str, tuple[str, ...]] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# 시점
+#
+# 질문은 "최근 2주 안에" 를 묻는데, 답은 시점 없이 yes/no 로만 들어왔다.
+# 그래서 "한 달 전에 샴푸 바꿨어요" 가 "2주 안에 바꿨다" 와 똑같이 처리돼
+# **엉뚱한 유예**가 걸렸다. 한 달 전 샴푸는 지금 가려움의 설명이 못 된다.
+#
+# 반대 방향도 있다. "3일째 밥을 안 먹어요" 는 하루 안 먹은 것과 다르다.
+# 지속 기간이 진료 권고를 가르는 기준인데 지금은 안 본다.
+#
+# 숫자 하나만 뽑는다. "며칠 전 일인가."
+# ---------------------------------------------------------------------------
+
+#: 시점이 의미를 갖는 key. 나머지는 뽑아도 쓸 데가 없다.
+DURATION_KEYS: frozenset[str] = frozenset({
+    "shampoo_changed", "food_changed", "env_exposure", "recent_bath",
+    "eating_less", "vomit",
+})
+
+#: (정규식, 고정 일수, 배수). 고정 일수가 None 이면 숫자를 읽어 배수를 곱한다.
+#:
+#: 위에서부터 먼저 맞는 것을 쓴다. "일주일" 이 "(\d+)\s*주" 보다 위에 있어야
+#: 한다 - 아래 것은 숫자가 있어야 하므로 안 걸리지만, 순서를 지키는 편이 안전하다.
+_DURATION: tuple[tuple[str, int | None, int], ...] = (
+    (r"오늘", 0, 1),
+    (r"어제", 1, 1),
+    (r"그[제저]께?", 2, 1),
+    (r"일주일|한\s*주", 7, 1),
+    (r"한\s*달|1\s*개월", 30, 1),
+    (r"(\d+)\s*개월", None, 30),
+    (r"(\d+)\s*달", None, 30),
+    (r"(\d+)\s*주", None, 7),
+    (r"(\d+)\s*일", None, 1),
+)
+
+#: 이 글자가 근처에 있어야 '기간' 으로 본다.
+#:
+#: 없으면 "하루 두 번 산책해요" 의 '두' 나 "2살이에요" 가 기간으로 읽힌다.
+#: 한국어에서 기간은 거의 항상 이 꼬리를 단다.
+_DURATION_TAIL = re.compile(r"(전|째|동안|부터|간|만에|쯤|경|前)")
+
+#: 기간 표현 뒤 몇 글자까지 꼬리를 찾을지.
+_TAIL_WINDOW = 3
+
+
+def duration_days(text: str) -> int | None:
+    """
+    "며칠 전 일인가." 못 찾으면 None.
+
+    **None 과 0 은 다르다.** None 은 "말 안 했다" 이고 0 은 "오늘" 이다.
+    모르면 지금까지처럼 처리해야 하므로 둘을 섞으면 안 된다.
+    """
+    if not text:
+        return None
+    best: int | None = None
+    for pat, fixed, mult in _DURATION:
+        for m in re.finditer(pat, text):
+            tail = text[m.end(): m.end() + _TAIL_WINDOW]
+            # '오늘·어제·그제' 는 그 자체로 시점이라 꼬리가 없어도 된다.
+            if fixed is None or fixed > 2:
+                if not _DURATION_TAIL.search(tail):
+                    continue
+            if fixed is not None:
+                days = fixed
+            else:
+                num = next((g for g in m.groups() if g and g.isdigit()), None)
+                if num is None:
+                    continue
+                days = int(num) * mult
+            # 여러 개면 **가장 오래된 것**을 쓴다. "3일 전부터 긁는데 한 달 전에
+            # 사료를 바꿨어요" 에서 원인은 더 먼 쪽이다.
+            if best is None or days > best:
+                best = days
+    return best
+
+
 class Extraction(BaseModel):
     """
     추출 결과.
@@ -262,6 +338,9 @@ def extract(text: str) -> Extraction:
         answers = {k: v for k, v in llm.items() if k not in vetoed}
 
         out.answers = answers
+        # 시점은 규칙으로 뽑아 붙인다. LLM 에 숫자를 맡기면 환각이 섞이고,
+        # 이건 정규식이 확실히 잘하는 일이다. 어느 문장인지 모르니 글 전체를 본다.
+        out.answers.update(_days_for(answers, text, None))
         out.matched = sorted(answers)
         out.unmatched = not answers
         out.engine = "llm"
@@ -281,7 +360,32 @@ def extract(text: str) -> Extraction:
                     break                      # 이 문장에서는 부정됐다
                 out.answers[key] = value
                 out.matched.append(m.group(0))
+                # 그 문장 안에서 먼저 찾는다. 없으면 글 전체를 본다 -
+                # "3일 전에 풀밭에서 뒹굴었는데 그 뒤로 긁어요" 처럼
+                # 시점과 증상이 다른 절에 나뉘는 게 흔하다.
+                out.answers.update(_days_for({key: value}, text, sentence))
                 break
 
     out.unmatched = not out.answers
+    return out
+
+
+def _days_for(
+    answers: dict[str, str], whole: str, sentence: str | None
+) -> dict[str, str]:
+    """
+    시점이 의미 있는 key 에 `<key>_days` 를 붙인다.
+
+    **못 찾았으면 빈 문자열을 넣는다.** 지우지 않고 비우는 이유는, 답변이
+    key 단위로 덮어써지기 때문이다. 예전 메모의 "한 달 전" 이 남아 있으면
+    오늘 "샴푸 바꿨어요" 에 그 숫자가 붙는다.
+    """
+    out: dict[str, str] = {}
+    for key in answers:
+        if key not in DURATION_KEYS:
+            continue
+        d = duration_days(sentence) if sentence else None
+        if d is None:
+            d = duration_days(whole)
+        out[key + "_days"] = "" if d is None else str(d)
     return out
