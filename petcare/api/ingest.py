@@ -649,6 +649,23 @@ def manual_dispense(dog_id: str, body: ManualDispense) -> dict:
     return {"ok": True, "command_id": cmd_id, "expires_in_s": int(MANUAL_TTL.total_seconds())}
 
 
+@router.post("/dogs/{dog_id}/dispense/cancel", dependencies=[Depends(require_app)])
+def cancel_dispense(dog_id: str) -> dict:
+    """
+    아직 실행되지 않은 급여 명령을 취소한다.
+
+    **진행 중인 배출은 멈출 수 없다.** 밥통은 60초마다 물어보므로 이미
+    가져간 명령에는 손이 닿지 않는다. 그건 밥통에 직접 /stop 을 쳐야 한다.
+    여기서 되는 것은 '아직 안 가져간 것' 뿐이고, 화면에도 그렇게 적는다.
+    """
+    with db.connect() as c:
+        if db.get_dog(c, dog_id) is None:
+            raise HTTPException(404, "등록되지 않은 개체입니다")
+        n = db.cancel_pending(c, dog_id, datetime.now())
+        c.commit()
+    return {"ok": True, "cancelled": n}
+
+
 @router.post("/feeder/{dog_id}/state", dependencies=[Depends(require_device)])
 def put_feeder_state(dog_id: str, body: FeederStateIn) -> dict:
     """

@@ -588,6 +588,25 @@ def count_pending(c: Conn, dog_id: str, now: datetime) -> int:
     return int(r["n"])
 
 
+def cancel_pending(c: Conn, dog_id: str, now: datetime) -> int:
+    """
+    아직 실행되지 않은 명령을 취소한다.
+
+    **이게 없으면 앱이 막힌다.** 밥통이 꺼진 동안 버튼을 누르면 명령이
+    쌓이고, 중복 급여를 막는 검사 때문에 그게 만료될 때까지(10분) 다음
+    요청이 거절된다. 보호자가 직접 물러날 길을 줘야 한다.
+
+    지운 게 아니라 skipped 로 남긴다. '준 것' 과 '먹은 것' 의 대조에서
+    사라진 명령은 설명할 수 없는 구멍이 된다.
+    """
+    cur = c.execute(
+        "UPDATE dispense_commands SET state='skipped', result='cancelled' "
+        "WHERE dog_id=? AND state='pending' AND expires_at > ?",
+        (dog_id, now.isoformat()),
+    )
+    return cur.rowcount
+
+
 def save_feeder_state(c: Conn, dog_id: str, payload: str, now: datetime) -> None:
     """밥통의 현재 상태를 덮어쓴다."""
     c.execute(

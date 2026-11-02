@@ -167,6 +167,33 @@ def test_같은_요청키는_두_번_쌓이지_않는다(tmpdb, loaded_123):
     assert e.value.status_code == 409
 
 
+def test_취소하면_다시_받는다(tmpdb, loaded_123):
+    """
+    밥통이 꺼진 동안 버튼을 누르면 명령이 쌓이고, 중복 급여 검사 때문에
+    만료될 때까지 다음 요청이 거절된다. **물러날 길이 있어야 한다.**
+    """
+    ingest.manual_dispense(DOG, ingest.ManualDispense(pellets={1: 1}))
+    assert ingest.cancel_dispense(DOG)["cancelled"] == 1
+    assert commands_of(tmpdb) == []
+
+    # 취소한 뒤에는 다시 받는다
+    ingest.manual_dispense(DOG, ingest.ManualDispense(pellets={1: 1}))
+    assert len(commands_of(tmpdb)) == 1
+
+
+def test_취소한_명령은_지우지_않고_남긴다(tmpdb, loaded_123):
+    """'준 것' 과 '먹은 것' 의 대조에서 사라진 명령은 설명할 수 없는 구멍이다."""
+    ingest.manual_dispense(DOG, ingest.ManualDispense(pellets={1: 1}))
+    ingest.cancel_dispense(DOG)
+    ack = ingest.feeder_view(DOG)["last_ack"]
+    assert ack["state"] == "skipped"
+    assert ack["result"] == "cancelled"
+
+
+def test_취소할_것이_없으면_0(tmpdb, loaded_123):
+    assert ingest.cancel_dispense(DOG)["cancelled"] == 0
+
+
 def test_등록되지_않은_개체는_404(tmpdb, loaded_123):
     with pytest.raises(HTTPException) as e:
         ingest.manual_dispense("dog_없음", ingest.ManualDispense(pellets={1: 1}))
