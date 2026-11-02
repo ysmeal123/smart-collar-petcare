@@ -132,6 +132,57 @@ EN 을 내리면 **모터가 돌지 않아도 축이 뻑뻑해진다.** 전류�
 
 ---
 
+## esp32_dispenser — Wi-Fi 배출 + 목줄 BLE 수신
+
+폰 핫스팟에 붙어 HTTP 명령으로 모터 4개를 따로 돌린다. 앱의 [밥통] 화면이 이걸 부른다.
+동시에 BLE 로 목줄(XIAO, `pebble-collar`)을 찾아 붙어 행동 판정을 받는다.
+
+```
+1. cp firmware/secrets.example.h firmware/esp32_dispenser/secrets.h
+   → WIFI_SSID / WIFI_PASSWORD 채우기 (핫스팟은 2.4GHz. 아이폰은 "호환성 최대화")
+2. Tools → Board "ESP32 Dev Module"
+   Tools → Partition Scheme "Huge APP (3MB No OTA/1MB SPIFFS)"   ← BLE 때문에 필수
+3. 라이브러리 NimBLE-Arduino 2.x
+4. 업로드 → 시리얼 115200 에 찍힌 IP 를 폰 브라우저로 → 슬롯별 [배출]
+```
+
+| | |
+|---|---|
+| `GET /status` | 상태 JSON — 진행 여부, 슬롯별 요청/완료, `collar` (목줄 연결·현재 행동·1분 요약) |
+| `POST /dispense` `slot=1..4&count=N` | 한 슬롯 |
+| `POST /meal` `s1=&s2=&s3=&s4=` | 한 끼 전체 |
+| `POST /stop` | 다음 단위에서 멈춤 |
+| `POST /calibrate` `slot=&steps=` | 펄스 수 직접 지정 — 1알/1회 양 보정용 |
+| `GET /entest` | EN 진단: 10초 LOW → 10초 HIGH |
+
+1단위 = `stepsPerUnit` 펄스 (지금은 200 = 한 바퀴). 실물로 돌려본 뒤 `SLOTS[]` 의 값만 고친다.
+배출 요청은 202 로 바로 답하고 `loop()` 에서 돈다. 배출 중 새 요청은 409.
+
+**EN 은 지금 빼 두었다 (`EN_PIN = -1`).** 공용 EN 을 GPIO5 나 GPIO22 에 꽂으면
+배출 명령이 들어와도 모터가 안 돌았고(로그에는 `[배출] 완료`), 선을 빼면 바로 돌았다.
+원인은 아직 모른다 — `/entest` 를 켜고 EN 줄 전압을 재 봐야 한다 (LOW 구간 0V 가 나와야 함).
+그동안 발열은 VREF 를 낮춰 잡고, 12V 는 시험할 때만 켠다.
+
+---
+
+## xiao_collar — 목줄 행동 판정 (시험용 모델)
+
+XIAO nRF52840 Sense. IMU 100Hz → 2샘플 평균 50Hz → 2초 창 → 특징 14개 → 랜덤포레스트 → 1초마다 판정.
+
+| 출력 | |
+|---|---|
+| 시리얼 115200 | `걷기  0.87  \| 쉬기 0.05 걷기 0.87 뛰기 0.08 털기 0.00` |
+| RGB LED | 쉬기 파랑 · 걷기 초록 · 뛰기 빨강 · 털기 흰색 |
+| BLE `pebble-collar` | 서비스 `19b10000-e8f2-537e-4f6c-d104768a1214`<br>`…0001` now 2바이트 [클래스, 신뢰도%] 1초마다<br>`…0002` min 8바이트 uint16 LE [쉬기초, 걷기초, 뛰기초, 털기회] 1분마다 |
+
+보드 `Seeeduino:mbed:xiaonRF52840Sense`, 라이브러리 `Seeed Arduino LSM6DS3`, `ArduinoBLE`.
+
+모델(`dogmodel.h`)은 `ml/train.py` 가 만든다. **특징 계산(`computeFeatures`)은
+`ml/features.py` 와 1:1 이어야 한다** — 한쪽만 고치면 판정이 망가진다.
+다른 모델(예: Edge Impulse 라이브러리)로 바꿀 때는 이 둘을 같이 교체하고 BLE 출력은 그대로 둔다.
+
+---
+
 ## 안 돌 때
 
 순서대로 본다. 위쪽이 더 흔하다.
