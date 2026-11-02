@@ -218,6 +218,25 @@ def test_밥통이_올린_상태를_앱이_읽는다(tmpdb):
     assert view["pending"] == 0
 
 
+def test_상태를_올리면_명령을_받아_간다(tmpdb, loaded_123):
+    """
+    왕복을 하나로 합친다.
+
+    상태 보고와 명령 조회가 따로였을 때는 버튼을 누르고 모터가 돌기까지
+    최악 60초였다. 같이 주고받으면 주기를 줄여도 요청 수가 안 늘어난다.
+    """
+    ingest.manual_dispense(DOG, ingest.ManualDispense(pellets={3: 1}))
+    out = ingest.put_feeder_state(DOG, ingest.FeederStateIn(busy=False))
+
+    assert out["ok"]
+    assert len(out["commands"]) == 1
+    assert out["commands"][0]["pellets"][0]["slot"] == 3
+
+
+def test_줄_명령이_없으면_빈_목록(tmpdb):
+    assert ingest.put_feeder_state(DOG, ingest.FeederStateIn())["commands"] == []
+
+
 def test_보고가_없으면_연결_안_된_것이다(tmpdb):
     view = ingest.feeder_view(DOG)
     assert view["online"] is False

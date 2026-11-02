@@ -38,8 +38,8 @@
  *
  * 목줄 BLE 계약 (전부 리틀엔디안)
  *   now 10B  u8 클래스, u8 신뢰도, u32 t_ms, u32 부팅ID            1초마다
- *   min 20B  u32 부팅ID, u32 일련번호, u32 t_ms, u16×4 요약        쌓인 것 포함
- *   shk 13B  u32 부팅ID, u32 일련번호, u32 t_ms, u8 신뢰도
+ *   min 24B  u32 부팅ID, u32 일련번호, u32 가장오래된번호, u32 t_ms, u16×4
+ *   shk 17B  u32 부팅ID, u32 일련번호, u32 가장오래된번호, u32 t_ms, u8 신뢰도
  *   ack  8B  u32 받은 min 일련번호, u32 받은 털기 일련번호          밥통 -> 목줄
  *
  * 배출은 요청을 받자마자 응답(202)하고 loop() 에서 실행한다.
@@ -90,7 +90,15 @@ const char* HOSTNAME  = "pebble";          // 지원되는 기기에선 http://p
 //:
 //: 급여 시각보다 30분 먼저 명령이 쌓이므로(COMMAND_LEAD) 1분 간격이면
 //: 충분하다. 더 자주 치면 무료 호스팅의 요청 수만 깎는다.
+//: 명령을 따로 물어보는 주기. **평소에는 쓸 일이 없다** - 상태 보고의
+//: 답으로 명령이 같이 오기 때문이다. 그 경로가 막혔을 때의 보험이다.
 const unsigned long POLL_MS = 60000;
+
+//: 내 상태를 올리는 주기. **앱의 '지금 행동' 이 이만큼 늦는다.**
+//:
+//: 명령 조회와 같이 1분으로 뒀더니 시연에서 목줄을 흔들고 한참 기다려야
+//: 했다. 본문이 200바이트도 안 되고 연결도 재사용하므로 부담이 작다.
+const unsigned long STATE_MS = 2000;
 
 //: 목줄 데이터를 올리는 주기. 1분 요약이 오는 대로 보낸다.
 //: 여러 번 몰아서 보내도 서버가 (부팅ID, t_ms) 로 중복을 막는다.
@@ -220,6 +228,15 @@ volatile int  nowCls = -1;
 volatile int  nowConf = 0;
 volatile unsigned long nowAt = 0;
 volatile bool nowFresh = false;
+
+// 보고 사이에 지나간 것 중 **가장 눈에 띄는 것**.
+//
+// 털기는 1~2초다. 보고할 때의 '지금 무엇' 만 보내면 흔든 것이 통째로
+// 빠진다. 실제로 앱에서 흔든 게 안 보인다는 말을 들었다.
+volatile int peakCls = -1;
+volatile int peakConf = 0;
+volatile unsigned long peakAt = 0;
+
 
 volatile uint16_t minVals[4] = {0, 0, 0, 0};
 volatile unsigned long minAt = 0;
@@ -380,12 +397,23 @@ static inline uint16_t rd16(const uint8_t* p) {
   return (uint16_t)(p[0] | (p[1] << 8));
 }
 
+/** 털기 > 뛰기 > 걷기 > 쉬기. 숫자가 클수록 알릴 가치가 있다. */
+static inline int clsRank(int c) {
+  switch (c) { case 3: return 3; case 2: return 2; case 1: return 1; default: return 0; }
+}
+
 static void onNow(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) {
   if (len < 10 || data[0] > 3) return;
   nowCls = data[0];
   nowConf = data[1];
   nowAt = millis();
   nowFresh = true;
+  // 보고 사이의 최고를 남긴다. 다음 보고에서 비우고 다시 센다.
+  if (peakCls < 0 || clsRank(nowCls) > clsRank(peakCls)) {
+    peakCls = nowCls;
+    peakConf = nowConf;
+    peakAt = nowAt;
+  }
   // 목줄의 시계. 이걸 알아야 모아둔 t_ms 를 실시각으로 환산할 수 있다.
   collarTms = rd32(data + 2);
   collarBootId = rd32(data + 6);
@@ -401,15 +429,16 @@ static void onNow(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) 
  * 제 시각에 꽂힌다. 화면에 띄울 '최근 1분' 만 따로 갱신한다.
  */
 static void onMin(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) {
-  if (len < 20) return;
+  if (len < 24) return;
   MinuteSample s;
   s.bootId  = rd32(data);
   s.seq     = rd32(data + 4);
-  s.t_ms    = rd32(data + 8);
-  s.rest_s  = rd16(data + 12);
-  s.walk_s  = rd16(data + 14);
-  s.run_s   = rd16(data + 16);
-  s.shake_n = rd16(data + 18);
+  uint32_t oldest = rd32(data + 8);
+  s.t_ms    = rd32(data + 12);
+  s.rest_s  = rd16(data + 16);
+  s.walk_s  = rd16(data + 18);
+  s.run_s   = rd16(data + 20);
+  s.shake_n = rd16(data + 22);
 
   // **이미 서버에 넣은 것은 받지 않는다.**
   //
@@ -417,6 +446,17 @@ static void onMin(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) 
   // 사본으로 차서 새 기록이 들어갈 자리가 없어진다. 서버가 중복을
   // 막아주긴 하지만, 여기서 거르면 올릴 일 자체가 없다.
   syncAckBoot(s.bootId);
+
+  // **기준선을 목줄에게서 받는다.**
+  //
+  // '끊김 없이 이어진 구간' 은 어디서 시작하는지를 알아야 센다. 밥통이
+  // 재부팅하면 0 부터 세는데 목줄은 이미 30번쯤 와 있어서, 30 이 1 이
+  // 아니라는 이유로 영원히 '0번까지' 만 ack 했다. 목줄 버퍼는 계속 늘었다.
+  //
+  // 목줄이 들고 있는 가장 오래된 번호보다 앞의 것은 목줄에 이미 없다.
+  // 그걸 바닥으로 삼으면 밥통이 몇 번을 재부팅해도 번호가 이어진다.
+  if (oldest > 0 && ackMinSeq < oldest - 1) ackMinSeq = oldest - 1;
+
   if (s.bootId == ackBootId && s.seq <= ackMinSeq) return;
   for (int i = 0; i < nSamples; i++) {
     if (samples[i].bootId == s.bootId && samples[i].seq == s.seq) return;
@@ -443,15 +483,17 @@ static void onMin(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) 
  * 통째로 약해진다.
  */
 static void onShake(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) {
-  if (len < 13) return;
+  if (len < 17) return;
   ShakeEvent e;
   e.bootId = rd32(data);
   e.seq    = rd32(data + 4);
-  e.t_ms   = rd32(data + 8);
-  e.conf   = data[12];
+  uint32_t oldest = rd32(data + 8);
+  e.t_ms   = rd32(data + 12);
+  e.conf   = data[16];
 
   // 재전송된 것은 받지 않는다 (onMin 과 같은 이유).
   syncAckBoot(e.bootId);
+  if (oldest > 0 && ackShakeSeq < oldest - 1) ackShakeSeq = oldest - 1;
   if (e.bootId == ackBootId && e.seq <= ackShakeSeq) return;
   for (int i = 0; i < nShakes; i++) {
     if (shakes[i].bootId == e.bootId && shakes[i].seq == e.seq) return;
@@ -918,6 +960,7 @@ const char* COLLAR_SERIAL = PEBBLE_COLLAR;
 bool serverOn = false;            // secrets 에 주소·토큰이 있으면 켜진다
 uint32_t bootId = 0;              // 부팅마다 증가. t_ms 의 기준점을 식별한다
 unsigned long lastPoll = 0;
+unsigned long lastState = 0;
 unsigned long lastUpload = 0;
 
 /**
@@ -1031,13 +1074,8 @@ static void ackCommand(const String& id, const char* state, const String& result
  * **한 번에 하나만 받는다.** 모터는 한 번에 하나만 돌고, 여러 개를 받아두면
  * 중간에 꺼졌을 때 어디까지 했는지 서버와 어긋난다.
  */
-static void pollCommands() {
-  String body;
-  int code = httpCall("GET", String("/v1/feeder/") + DOG_ID + "/commands", "", body);
-  if (code != 200) {
-    if (code != -1) Serial.printf("[서버] 명령 조회 실패 (%d)\n", code);
-    return;
-  }
+static void takeCommand(const String& body) {
+  if (busy || hasJob) return;         // 하나 끝나기 전에 또 받지 않는다
 
   int arr = body.indexOf('[');
   if (arr < 0) return;
@@ -1115,16 +1153,41 @@ static void pollCommands() {
 
 // --- 상태 보고 --------------------------------------------------------------
 
+/**
+ * 명령을 따로 물어본다. **평소에는 쓸 일이 없다.**
+ *
+ * 상태 보고의 답으로 명령이 같이 오기 때문이다. 이건 그 경로가 막혔을
+ * 때의 보험이고, 주기도 길다.
+ */
+static void pollCommands() {
+  String body;
+  int code = httpCall("GET", String("/v1/feeder/") + DOG_ID + "/commands", "", body);
+  if (code != 200) {
+    if (code != -1) Serial.printf("[서버] 명령 조회 실패 (%d)\n", code);
+    return;
+  }
+  takeCommand(body);
+}
+
+
 static void reportState() {
   String j = "{\"busy\":";
   j += busy ? "true" : "false";
   j += ",\"last_job\":\"" + jobSource + "\"";
   j += ",\"collar_connected\":";
   j += collarConnected ? "true" : "false";
+  // **보고 사이에 지나간 것 중 가장 눈에 띄는 것**을 보낸다.
+  // 없으면 지금 값을 보낸다.
+  int cls = (peakCls >= 0) ? (int)peakCls : (int)nowCls;
+  int conf = (peakCls >= 0) ? (int)peakConf : (int)nowConf;
+  unsigned long at = (peakCls >= 0) ? peakAt : nowAt;
+  peakCls = -1;                       // 비우고 다음 구간을 다시 센다
+
   const char* ids[4] = {"rest", "walk", "run", "body_shake"};
   j += ",\"collar_class\":\"";
-  j += (nowCls >= 0 && nowCls <= 3) ? ids[nowCls] : "";
-  j += "\",\"collar_conf\":" + String(nowConf / 100.0f, 2);
+  j += (cls >= 0 && cls <= 3) ? ids[cls] : "";
+  j += "\",\"collar_conf\":" + String(conf / 100.0f, 2);
+  j += ",\"collar_age_s\":" + String(at ? (millis() - at) / 1000 : 0);
   j += ",\"minute\":{\"rest_s\":" + String(minVals[0]);
   j += ",\"walk_s\":" + String(minVals[1]);
   j += ",\"run_s\":" + String(minVals[2]);
@@ -1132,7 +1195,13 @@ static void reportState() {
 
   String out;
   int code = httpCall("POST", String("/v1/feeder/") + DOG_ID + "/state", j, out);
-  if (code != 200) Serial.printf("[서버] 상태 보고 실패 (%d)\n", code);
+  if (code != 200) {
+    Serial.printf("[서버] 상태 보고 실패 (%d)\n", code);
+    return;
+  }
+  // **답에 명령이 같이 온다.** 따로 물어보면 왕복이 두 배가 되고,
+  // 버튼을 누르고 모터가 돌기까지 조회 주기만큼 더 걸린다.
+  takeCommand(out);
 }
 
 // --- 목줄 데이터 ------------------------------------------------------------
@@ -1348,9 +1417,13 @@ static void serverCycle() {
     jobCmdId = "";
   }
 
+  if (now - lastState >= STATE_MS || lastState == 0) {
+    lastState = now;
+    reportState();
+  }
+  // 명령 조회는 1분 그대로. 급여 시각보다 30분 먼저 쌓이므로 충분하다.
   if (now - lastPoll >= POLL_MS || lastPoll == 0) {
     lastPoll = now;
-    reportState();
     pollCommands();
   }
   // 주기가 되었거나, 밀린 것이 몰려와 버퍼가 반쯤 찼으면 올린다.

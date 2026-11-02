@@ -81,8 +81,8 @@ fun FeederSheet(store: FeederStore, dog: MyDog, onDismiss: () -> Unit) {
     }
     val counts = remember { mutableStateListOf(1, 1, 1, 40) }
 
-    // 서버 경유는 밥통이 60초마다 보고하므로 1초마다 물어볼 이유가 없다.
-    val pollMs = if (link.viaServer) 5_000L else 1_000L
+    // 밥통이 2초마다 보고한다. 앱이 그보다 느리게 읽으면 그만큼 더 늦는다.
+    val pollMs = if (link.viaServer) 1_500L else 1_000L
 
     LaunchedEffect(base, route) {
         status = null

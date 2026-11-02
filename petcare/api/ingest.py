@@ -573,8 +573,14 @@ class FeederStateIn(BaseModel):
     last_job: str = ""
     collar_connected: bool = False
     #: rest / walk / run / body_shake. 빈 문자열이면 아직 판정이 없다.
+    #:
+    #: **보고 사이에 지나간 것 중 가장 눈에 띄는 것**이다. 털기는 1~2초라
+    #: '지금 무엇' 만 보내면 흔든 것이 통째로 빠진다. 밥통이 보고 주기 동안
+    #: 본 것 중 털기 > 뛰기 > 걷기 > 쉬기 순으로 골라 보낸다.
     collar_class: str = ""
     collar_conf: float = Field(default=0.0, ge=0.0, le=1.0)
+    #: 그 판정이 몇 초 전이었나. 앱이 "3초 전 털기" 로 보여준다.
+    collar_age_s: int = Field(default=0, ge=0)
     #: 직전 1분 요약 {rest_s, walk_s, run_s, shake_n}
     minute: dict[str, int] = Field(default_factory=dict)
 
@@ -669,20 +675,23 @@ def cancel_dispense(dog_id: str) -> dict:
 @router.post("/feeder/{dog_id}/state", dependencies=[Depends(require_device)])
 def put_feeder_state(dog_id: str, body: FeederStateIn) -> dict:
     """
-    밥통이 자기 상태를 올린다. 폴링할 때 같이 보내면 왕복이 하나로 줄어든다.
+    밥통이 자기 상태를 올리고, **그 답으로 명령을 받아 간다.**
+
+    처음에는 상태 보고와 명령 조회가 따로였다. 상태는 10초, 명령은 60초
+    주기라 버튼을 누르고 모터가 돌기까지 최악 60초가 걸렸다. 둘을 한 번에
+    주고받으면 왕복이 절반이 되고, 주기를 줄여도 요청 수가 안 늘어난다.
 
     **행동 기록은 여기 쌓이지 않는다.** 그건 /ingest 로 가서 events 와
     status_samples 에 들어간다. 여기 있는 건 화면에 띄울 현재값뿐이고,
     사라져도 복구할 필요가 없다.
     """
+    now = datetime.now()
     with db.connect() as c:
         if db.get_dog(c, dog_id) is None:
             raise HTTPException(404, "등록되지 않은 개체입니다")
-        db.save_feeder_state(
-            c, dog_id, body.model_dump_json(), datetime.now()
-        )
+        db.save_feeder_state(c, dog_id, body.model_dump_json(), now)
         c.commit()
-    return {"ok": True}
+        return {"ok": True, "commands": db.pending_commands(c, dog_id, now)}
 
 
 @router.get("/dogs/{dog_id}/feeder", dependencies=[Depends(require_app)])

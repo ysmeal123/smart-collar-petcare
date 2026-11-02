@@ -15,9 +15,10 @@
  *   BLE  이름 "pebble-collar"   (전부 리틀엔디안)
  *     서비스        19b10000-e8f2-537e-4f6c-d104768a1214
  *     now  (notify) 19b10001-...  10B  u8 클래스, u8 신뢰도(0~100), u32 t_ms, u32 부팅ID
- *     min  (notify) 19b10002-...  20B  u32 부팅ID, u32 일련번호, u32 t_ms,
- *                                      u16 쉬기초/걷기초/뛰기초/털기수
- *     shk  (notify) 19b10003-...  13B  u32 부팅ID, u32 일련번호, u32 t_ms, u8 신뢰도
+ *     min  (notify) 19b10002-...  24B  u32 부팅ID, u32 일련번호, u32 가장오래된번호,
+ *                                      u32 t_ms, u16 쉬기초/걷기초/뛰기초/털기수
+ *     shk  (notify) 19b10003-...  17B  u32 부팅ID, u32 일련번호, u32 가장오래된번호,
+ *                                      u32 t_ms, u8 신뢰도
  *     ack  (write)  19b10004-...   8B  u32 받은 min 일련번호, u32 받은 털기 일련번호
  *
  * **일련번호가 둘 다 있어야 한다.** 알림은 유실될 수 있다 - 연결 간격보다
@@ -147,8 +148,8 @@ static void dropShake(int n) {
 
 BLEService svc("19b10000-e8f2-537e-4f6c-d104768a1214");
 BLECharacteristic chNow("19b10001-e8f2-537e-4f6c-d104768a1214", BLERead | BLENotify, 10);
-BLECharacteristic chMin("19b10002-e8f2-537e-4f6c-d104768a1214", BLERead | BLENotify, 20);
-BLECharacteristic chShake("19b10003-e8f2-537e-4f6c-d104768a1214", BLERead | BLENotify, 13);
+BLECharacteristic chMin("19b10002-e8f2-537e-4f6c-d104768a1214", BLERead | BLENotify, 24);
+BLECharacteristic chShake("19b10003-e8f2-537e-4f6c-d104768a1214", BLERead | BLENotify, 17);
 BLECharacteristic chAck("19b10004-e8f2-537e-4f6c-d104768a1214", BLEWrite, 8);
 bool bleOk = false;
 
@@ -355,7 +356,13 @@ static void drain() {
   static unsigned long lastProgress = 0;
   unsigned long now = millis();
 
-  if (!BLE.connected()) {
+  // **구독을 확인하고 보낸다.** 연결만으로는 부족하다.
+  //
+  // 밥통은 붙은 뒤 특성을 찾아 구독하는 데 3초쯤 쓴다. 그 전에 보낸 알림은
+  // 버려지는데, 목줄은 보냈다고 믿고(minSent == minCount) 멈춘다. 그러면
+  // 재전송 타이머(2분)를 기다려야 해서 밀린 것이 매번 2분씩 늦었다.
+  // 실제로 2건 + 털기 3건이 그렇게 한 바퀴를 놓쳤다.
+  if (!BLE.connected() || !chMin.subscribed() || !chShake.subscribed()) {
     // 다시 붙었을 때 밀린 것부터 보내도록 되돌려 둔다.
     minSent = shakeSent = 0;
     return;
@@ -363,17 +370,30 @@ static void drain() {
   if (now - lastSend < 200) return;
   lastSend = now;
 
+  // 밀린 것을 보내기 시작할 때 한 번 찍는다. 몇 건이 밀려 있었는지가
+  // 로그에 남아야 유실을 셀 수 있다.
+  if (minSent == 0 && shakeSent == 0 && (minCount || shakeCount)) {
+    char line[80];
+    snprintf(line, sizeof line, "[전송] 밀린 요약 %d건, 털기 %d건 보냅니다",
+             minCount, shakeCount);
+    Serial.println(line);
+  }
+
   if (minSent < minCount) {
     const MinRec& r = minBuf[minSent];
-    uint8_t buf[20];
+    uint8_t buf[24];
     put32(buf, bootId);
     put32(buf + 4, r.seq);
-    put32(buf + 8, r.t_ms);
-    put16(buf + 12, r.rest);
-    put16(buf + 14, r.walk);
-    put16(buf + 16, r.run);
-    put16(buf + 18, r.shake);
-    chMin.writeValue(buf, 20);
+    // **지금 들고 있는 가장 오래된 번호.** 밥통이 기준선을 잡는 데 쓴다.
+    // 이것보다 앞의 기록은 목줄에 이미 없다 - 밥통이 '받았다' 고 쳐도
+    // 잃을 것이 없고, 그래야 밥통이 재부팅해도 번호가 이어진다.
+    put32(buf + 8, minBuf[0].seq);
+    put32(buf + 12, r.t_ms);
+    put16(buf + 16, r.rest);
+    put16(buf + 18, r.walk);
+    put16(buf + 20, r.run);
+    put16(buf + 22, r.shake);
+    chMin.writeValue(buf, 24);
     minSent++;
     lastProgress = now;
     return;                          // 한 번에 하나만
@@ -381,12 +401,13 @@ static void drain() {
 
   if (shakeSent < shakeCount) {
     const ShakeRec& r = shakeBuf[shakeSent];
-    uint8_t buf[13];
+    uint8_t buf[17];
     put32(buf, bootId);
     put32(buf + 4, r.seq);
-    put32(buf + 8, r.t_ms);
-    buf[12] = r.conf;
-    chShake.writeValue(buf, 13);
+    put32(buf + 8, shakeBuf[0].seq);     // 들고 있는 가장 오래된 번호
+    put32(buf + 12, r.t_ms);
+    buf[16] = r.conf;
+    chShake.writeValue(buf, 17);
     shakeSent++;
     lastProgress = now;
     return;

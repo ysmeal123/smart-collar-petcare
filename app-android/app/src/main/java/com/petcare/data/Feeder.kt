@@ -212,7 +212,9 @@ object Feeder {
     private fun fromServer(v: Net.FeederView): Status {
         val s = v.state
         val cls = Collar.IDS.indexOf(s?.collarClass ?: "")
-        val age = v.ageS ?: -1
+        // 두 지연을 더해야 실제 나이가 된다 — 목줄이 판정한 뒤 밥통이
+        // 보고하기까지, 그리고 밥통이 보고한 뒤 지금까지.
+        val age = if (v.ageS == null) -1 else v.ageS + (s?.collarAgeS ?: 0)
         return Status(
             ok = v.online,
             busy = s?.busy == true,
@@ -229,8 +231,8 @@ object Feeder {
                         it.minute.runS, it.minute.shakeN,
                     ),
                     minAge = age,
-                    // 밥통은 60초마다 보고한다. 한 번 놓쳐도 낡았다고 하지 않는다.
-                    staleAfter = 180,
+                    // 밥통이 2초마다 보고한다. 한두 번 놓쳐도 낡았다고 하지 않는다.
+                    staleAfter = 30,
                 )
             },
             via = VIA_SERVER,

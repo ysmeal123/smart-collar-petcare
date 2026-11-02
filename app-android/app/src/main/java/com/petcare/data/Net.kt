@@ -171,6 +171,8 @@ object Net {
         /** rest / walk / run / body_shake. 빈 문자열이면 아직 판정이 없다. */
         @SerialName("collar_class") val collarClass: String = "",
         @SerialName("collar_conf") val collarConf: Double = 0.0,
+        /** 그 판정이 몇 초 전이었나. 밥통이 보고한 시점 기준. */
+        @SerialName("collar_age_s") val collarAgeS: Int = 0,
         val minute: FeederMinute = FeederMinute(),
     )
 
