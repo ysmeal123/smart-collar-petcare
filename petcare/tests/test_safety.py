@@ -309,8 +309,16 @@ def test_수면축은_원인축이_있으면_억제된다(skin_case):
     assert "calm" not in cart_ids(rx)
 
 
-def test_장건강은_문진으로만_처방된다(skin_case):
-    """센서가 아니라 항생제 복용·설사 보고 같은 문진 항목이 트리거다."""
+def test_장건강은_문진으로만_처방된다(skin_case, monkeypatch):
+    """
+    센서가 아니라 항생제 복용·설사 보고 같은 문진 항목이 트리거다.
+
+    지금 밥통의 4번은 사료라 장건강 로더가 없다(기본 PEBBLE_SLOTS=1,2,3).
+    여기서는 **계산 규칙**을 보려는 것이므로 4번에 장건강이 꽂혔다고 가정한다.
+    """
+    import core.prescribe as prescribe_mod
+    monkeypatch.setattr(prescribe_mod, "LOADED_SLOTS", frozenset({1, 2, 3, 4}))
+
     plain, _ = prescribe(skin_case.profile, skin_case.days)
     assert "gut" not in cart_ids(plain)
 
@@ -511,3 +519,17 @@ def test_로더를_늘리면_그대로_살아난다(skin_case, monkeypatch):
     many = prescribe(skin_case.profile, skin_case.days)[0]
 
     assert len(many.items) > len(few.items), "로더를 늘렸는데 처방이 안 늘었다"
+
+
+def test_4번은_사료라_장건강을_내보내지_않는다(skin_case):
+    """
+    기본 장착은 1,2,3 (영양제) + 4번 사료. 장건강이 필요해도 4번으로 알을
+    보내면 밥통이 끼니 명령을 통째로 거부한다. 계산은 하되 빼고, 이유를 남긴다.
+    """
+    on_abx = with_profile(skin_case, medications=[Medication.ANTIBIOTIC])
+    rx, _ = prescribe(on_abx, skin_case.days)
+
+    assert "gut" not in cart_ids(rx)
+    from core.constants import CARTRIDGE_BY_ID
+    assert all(CARTRIDGE_BY_ID[i.cartridge_id].slot in {1, 2, 3} for i in rx.items)
+    assert any(t.step == "로더 없음" and "장건강" in t.detail for t in rx.trace)

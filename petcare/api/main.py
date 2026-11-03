@@ -33,7 +33,7 @@ from store.dialect import backend
 
 app = FastAPI(
     title="Pet Nutrition API",
-    description="스마트 목줄 행동 데이터 기반 사료·영양제 처방",
+    description="스마트 목줄 행동 데이터 기반 사료·영양제 급여 계획",
     version="0.1.0",
 )
 
