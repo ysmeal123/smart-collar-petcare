@@ -457,7 +457,7 @@ def dashboard(dog_id: str, days: int = 7) -> dict:
         recent = db.load_daily(c, dog_id)
         rx = db.latest_prescription(c, dog_id)
         if rx is None:
-            raise HTTPException(409, "아직 처방이 계산되지 않았습니다")
+            raise HTTPException(409, "아직 급여 계획이 계산되지 않았습니다")
 
         # 앱은 한 번만 부른다. 차트·계획·상태·질문을 한 응답에 담는다.
         # 왕복이 늘수록 화면이 조각조각 뜨고 오프라인 처리가 복잡해진다.

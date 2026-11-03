@@ -62,7 +62,7 @@ fun InsightCard(rx: Prescription) {
             Text(rx.escalationReason, style = T.body.copy(color = T.bodyMuted))
             Spacer(Modifier.height(T.md))
             Text(
-                "영양제 처방은 자동으로 멈췄습니다. 사료는 평소대로 나갑니다.",
+                "영양제 급여는 자동으로 멈췄습니다. 사료는 평소대로 나갑니다.",
                 style = T.caption.copy(color = T.bodyMuted),
             )
         }
@@ -260,7 +260,7 @@ fun TraceSheet(rx: Prescription, onDismiss: () -> Unit) {
         contentColor = T.ink,
     ) {
         Column(modifier = Modifier.fillMaxWidth().padding(horizontal = T.gutter)) {
-            Text("오늘의 처방 근거", style = T.displayMd)
+            Text("오늘의 급여 계획 근거", style = T.displayMd)
             Spacer(Modifier.height(T.xs))
             Text(
                 "계산 과정을 그대로 보여드립니다.",

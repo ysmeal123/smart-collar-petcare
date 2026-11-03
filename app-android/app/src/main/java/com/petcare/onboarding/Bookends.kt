@@ -146,7 +146,7 @@ fun SummaryScreen(dog: MyDog, onStart: () -> Unit) {
 
             // --- 안전 필터 ---------------------------------------------------
             Column(modifier = Modifier.fillMaxWidth().utilityCard()) {
-                Text("알려주신 내용이 처방을 바꿉니다", style = T.captionStrong)
+                Text("알려주신 내용이 급여 계획을 바꿉니다", style = T.captionStrong)
                 Spacer(Modifier.height(T.sm))
 
                 if (rules.isEmpty()) {
@@ -205,7 +205,7 @@ fun SummaryScreen(dog: MyDog, onStart: () -> Unit) {
                         "${dog.name}의 평소와 비교해서 찾습니다. " +
                         "그 평소를 만드는 데 14일이 걸려요.\n\n" +
                         "그동안에도 사료는 정상적으로 나갑니다. " +
-                        "영양제 처방만 기준선이 잡힌 뒤에 시작합니다.",
+                        "영양제 급여만 기준선이 잡힌 뒤에 시작합니다.",
                     style = T.body.copy(color = T.bodyMuted),
                 )
             }

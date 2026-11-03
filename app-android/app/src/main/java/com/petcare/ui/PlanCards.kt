@@ -298,8 +298,8 @@ fun QuestionCard(
  *   식욕            차단만 — 안 먹으면 영양제를 멈춘다
  */
 private val AXIS_ROLE = mapOf(
-    "skin" to "처방",
-    "mobility" to "처방",
+    "skin" to "급여 조정",
+    "mobility" to "급여 조정",
     "sleep" to "종속",
     "ear" to "알림만",
     "appetite" to "차단만",
@@ -327,7 +327,7 @@ fun WellnessCard(twin: DogTwin) {
                 Text(
                     "${twin.baseline.stageNote} " +
                         "(관찰 ${twin.baseline.daysObserved}일). " +
-                        "평소를 알기 전에는 영양제를 처방하지 않습니다.",
+                        "평소를 알기 전에는 영양제를 급여하지 않습니다.",
                     style = T.caption,
                 )
             }
@@ -376,7 +376,7 @@ private fun WellnessRow(axis: AxisScore) {
         }
 
         AXIS_ROLE[axis.axis]?.let { role ->
-            if (role != "처방") {
+            if (role != "급여 조정") {
                 Spacer(Modifier.height(2.dp))
                 Text(
                     "        $role",

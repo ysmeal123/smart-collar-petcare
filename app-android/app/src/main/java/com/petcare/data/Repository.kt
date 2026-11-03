@@ -185,7 +185,7 @@ fun Dashboard.withSafetyFilter(dog: MyDog): Dashboard {
             }
 
             else -> notes += TraceStep(
-                step = "🛡 Layer 0/1 · 처방 차단",
+                step = "🛡 Layer 0/1 · 급여 차단",
                 detail = "${item.name} ${item.pellets}알을 제외했습니다 " +
                     "(${blockReason(dog, item.cartridgeId)})",
                 changed = true,
