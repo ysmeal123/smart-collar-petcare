@@ -19,8 +19,8 @@ from core.constants import (
     K_ABSOLUTE_MIN,
     FOOD_BY_ID,
     K_ACTIVITY_GAIN,
-    K_BASE_INTACT,
-    K_BASE_NEUTERED,
+    K_BASE_ADULT,
+    K_BASE_YOUNG_ADULT,
     K_BASE_PUPPY_EARLY,
     K_BASE_PUPPY_LATE,
     K_BASE_SENIOR,
@@ -57,18 +57,23 @@ def target_weight(profile: DogProfile) -> float:
 
 
 def base_multiplier(profile: DogProfile) -> tuple[float, str]:
-    """정적 데이터만으로 정하는 활동계수 기준값."""
+    """
+    정적 데이터만으로 정하는 활동계수 기준값.
+
+    성견은 한국 「반려동물 사료 영양표준」(국립축산과학원 2024) 표 2-5 의
+    나이별 유지 에너지를 따른다. 표가 나이로만 나누므로 중성화 여부는 보지 않는다.
+    """
     if profile.age_months < 4:
         return K_BASE_PUPPY_EARLY, "성장기(4개월 미만)"
     if profile.is_puppy:
         return K_BASE_PUPPY_LATE, "성장기"
     if profile.body_condition is BodyCondition.OVERWEIGHT:
         return K_BASE_WEIGHT_LOSS, "체중 감량"
-    if profile.is_senior:
-        return K_BASE_SENIOR, "노령"
-    if profile.neutered:
-        return K_BASE_NEUTERED, "중성화 성견"
-    return K_BASE_INTACT, "미중성화 성견"
+    if profile.age_months >= 84:
+        return K_BASE_SENIOR, "7세 이상 (영양표준 95 kcal/kg^0.75)"
+    if profile.age_months >= 36:
+        return K_BASE_ADULT, "3~7세 (영양표준 110 kcal/kg^0.75)"
+    return K_BASE_YOUNG_ADULT, "1~2세 (영양표준 130 kcal/kg^0.75)"
 
 
 def _measured_weights(days: list[DailySummary]) -> list[float]:
@@ -137,7 +142,7 @@ def compute_energy(
 
     # --- 활동계수 기준값 (정적) -----------------------------------------
     k_base, label = base_multiplier(profile)
-    trace.append(TraceStep(step="활동계수 기준", detail=f"{label} → k_base = {k_base}"))
+    trace.append(TraceStep(step="활동계수 기준", detail=f"{label} → k_base = {k_base:.2f}"))
 
     # --- 외부 루프: 체중 되먹임 -----------------------------------------
     if frozen:

@@ -117,7 +117,7 @@ QUESTIONS: dict[HealthAxis, list[Question]] = {
         Question(
             key="ear_smell", axis=HealthAxis.EAR,
             text="귀에서 평소와 다른 냄새가 나나요?",
-            why="외이염의 가장 이른 신호입니다",
+            why="귀 상태가 달라진 것을 가장 먼저 알려주는 신호입니다",
         ),
         Question(
             key="ear_discharge", axis=HealthAxis.EAR,

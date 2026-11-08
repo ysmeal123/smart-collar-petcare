@@ -28,6 +28,7 @@ from core.constants import (
     SOFT_LIMIT_BY_MEDICATION,
     TREAT_RESERVE_RATIO,
     UPPER_LIMIT_PER_KG,
+    UPPER_LIMIT_PER_KG_FEED,
     ZINC_COPPER_MAX_RATIO,
     Nutrient,
 )
@@ -120,6 +121,15 @@ def headroom(profile: DogProfile, food_grams: float) -> dict[str, float]:
     room: dict[str, float] = {}
     for nutrient, per_kg in UPPER_LIMIT_PER_KG.items():
         limit = per_kg * profile.weight_kg * SAFETY_MARGIN
+        room[nutrient] = max(
+            0.0, limit - from_food.get(nutrient, 0.0) - from_treats.get(nutrient, 0.0)
+        )
+
+    # 사료 양 기준 상한 (예: 아연 — EU 법정 최대치, 사료+첨가 합계).
+    # 먹는 양(사료 + 간식 예비분)에 비례한다. 법정 최대치라 SAFETY_MARGIN 은 곱하지 않는다.
+    eaten_kg = food_grams * (1 + TREAT_RESERVE_RATIO) / 1000.0
+    for nutrient, per_kg_feed in UPPER_LIMIT_PER_KG_FEED.items():
+        limit = per_kg_feed * eaten_kg
         room[nutrient] = max(
             0.0, limit - from_food.get(nutrient, 0.0) - from_treats.get(nutrient, 0.0)
         )
