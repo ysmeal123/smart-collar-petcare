@@ -583,6 +583,8 @@ class FeederStateIn(BaseModel):
     collar_age_s: int = Field(default=0, ge=0)
     #: 직전 1분 요약 {rest_s, walk_s, run_s, shake_n}
     minute: dict[str, int] = Field(default_factory=dict)
+    #: 밥통이 켜진 뒤 받은 털기 수. 화면에 바로 오르는 숫자 (기록은 /ingest 가 한다).
+    shake_live: int = Field(default=0, ge=0)
 
 
 @router.post("/dogs/{dog_id}/dispense", dependencies=[Depends(require_app)])

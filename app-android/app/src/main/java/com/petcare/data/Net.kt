@@ -174,6 +174,8 @@ object Net {
         /** 그 판정이 몇 초 전이었나. 밥통이 보고한 시점 기준. */
         @SerialName("collar_age_s") val collarAgeS: Int = 0,
         val minute: FeederMinute = FeederMinute(),
+        /** 밥통이 켜진 뒤 받은 털기 수. */
+        @SerialName("shake_live") val shakeLive: Int = -1,
     )
 
     @Serializable

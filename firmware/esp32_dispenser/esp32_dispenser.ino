@@ -271,6 +271,12 @@ int nSamples = 0;
 ShakeEvent shakes[MAX_EVENTS];
 int nShakes = 0;
 
+//: 밥통이 켜진 뒤 받은 털기 수. **화면 표시용**이다 (서버 기록은 shakes[] 가 한다).
+//:
+//: 1분 요약의 shake_n 은 1분이 지나야 바뀌어서, 흔들어 보여줄 때 숫자가
+//: 바로 안 오른다. 털기 이벤트가 올 때마다 하나씩 올린다.
+volatile uint32_t shakeLive = 0;
+
 /**
  * 뒤에 붙인다. **꽉 차면 받지 않는다** (버리지 않는다).
  *
@@ -498,7 +504,7 @@ static void onShake(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool
   for (int i = 0; i < nShakes; i++) {
     if (shakes[i].bootId == e.bootId && shakes[i].seq == e.seq) return;
   }
-  pushShake(e);
+  if (pushShake(e)) shakeLive++;
 }
 
 static void startCollarScan() {
@@ -716,6 +722,7 @@ static String statusJson() {
   j += ",\"min\":[" + String(minVals[0]) + "," + String(minVals[1]) + "," +
        String(minVals[2]) + "," + String(minVals[3]) + "]";
   j += ",\"min_age\":" + String(minAt ? (long)((now - minAt) / 1000) : -1L);
+  j += ",\"shakes\":" + String(shakeLive);
   j += "}}";
   return j;
 }
@@ -782,11 +789,18 @@ static void handleDispense() {
   acceptJob();
 }
 
+/**
+ * 한 끼 전체. s1~s3 = 알 수, **사료는 g (그램)** 로 받는다.
+ *
+ * 서버 명령과 같은 모양이다 (pellets + food_g). 앱의 [오늘 계획대로 급여]
+ * 가 직접 경로에서도 같은 숫자를 보낼 수 있다.
+ */
 static void handleMeal() {
   if (rejectIfBusy()) return;
-  int counts[N_SLOTS];
+  int counts[N_SLOTS] = {0};
   int total = 0;
   for (int s = 0; s < N_SLOTS; s++) {
+    if (s == FOOD_SLOT) continue;
     String key = "s" + String(s + 1);
     counts[s] = argInt(key.c_str(), 0);
     if (counts[s] < 0 || counts[s] > SLOTS[s].maxUnits) {
@@ -795,9 +809,16 @@ static void handleMeal() {
     }
     total += counts[s];
   }
-  if (total == 0) { sendError(400, "nothing to dispense"); return; }
+  int grams = argInt("g", 0);
+  int steps = (int)(grams * FOOD_STEPS_PER_G + 0.5f);
+  if (grams < 0 || steps > FOOD_STEPS_MAX) {
+    sendError(400, "g must be 0-" + String((int)(FOOD_STEPS_MAX / FOOD_STEPS_PER_G)));
+    return;
+  }
+  if (total == 0 && steps == 0) { sendError(400, "nothing to dispense"); return; }
   for (int s = 0; s < N_SLOTS; s++) pendingUnits[s] = counts[s];
   acceptJob();
+  foodSteps = steps;            // acceptJob 이 0 으로 지우므로 그 뒤에 넣는다
 }
 
 static void handleCalibrate() {
@@ -1191,7 +1212,8 @@ static void reportState() {
   j += ",\"minute\":{\"rest_s\":" + String(minVals[0]);
   j += ",\"walk_s\":" + String(minVals[1]);
   j += ",\"run_s\":" + String(minVals[2]);
-  j += ",\"shake_n\":" + String(minVals[3]) + "}}";
+  j += ",\"shake_n\":" + String(minVals[3]) + "}";
+  j += ",\"shake_live\":" + String(shakeLive) + "}";
 
   String out;
   int code = httpCall("POST", String("/v1/feeder/") + DOG_ID + "/state", j, out);

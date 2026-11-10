@@ -320,7 +320,7 @@ private fun Content(
     }
 
     if (showFeeder) {
-        FeederSheet(store = feederStore, dog = dog, onDismiss = { showFeeder = false })
+        FeederSheet(store = feederStore, dog = dog, plan = data.plan, onDismiss = { showFeeder = false })
     }
 
     if (showSettings) {

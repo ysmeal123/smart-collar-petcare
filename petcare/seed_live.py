@@ -208,12 +208,28 @@ def seed(scenario: str, conn) -> dict:
     }
 
 
+def pick_scenarios(argv: list[str]) -> list[str]:
+    """`--only skin` 이면 그 시나리오만. 없으면 전부.
+
+    시연은 강아지 한 마리(초코, 피부)로 한다. 나머지가 섞여 있으면
+    앱에서 엉뚱한 개를 고르는 사고가 난다.
+    """
+    if "--only" in argv:
+        i = argv.index("--only")
+        names = argv[i + 1].split(",") if i + 1 < len(argv) else []
+        bad = [n for n in names if n not in COLLARS]
+        if not names or bad:
+            raise SystemExit(f"--only 뒤에 시나리오를 쓰세요. 가능: {', '.join(COLLARS)}")
+        return names
+    return list(COLLARS)
+
+
 def main() -> None:
     db.init()
     print(f"DB: {db.DB_PATH}\n")
 
     with db.connect() as conn:
-        for scenario in COLLARS:
+        for scenario in pick_scenarios(sys.argv[1:]):
             r = seed(scenario, conn)
             print(f"[{r['scenario']}]  {r['dog_id']}  ({r['collar']})")
             print(f"  이벤트 {r['events']:,}건 / {r['days']}일 수집")

@@ -1,7 +1,8 @@
 """
 배포 직후 한 번 돌린다.
 
-    python -m seed_remote
+    python -m seed_remote              # 4마리 전부
+    python -m seed_remote --only skin  # 시연용: 초코 한 마리
 
 DATABASE_URL 이 있으면 PostgreSQL, 없으면 로컬 SQLite 에 쓴다.
 
@@ -13,7 +14,7 @@ from __future__ import annotations
 
 import sys
 
-from seed_live import COLLARS, seed
+from seed_live import pick_scenarios, seed
 from store import db
 from store.dialect import backend
 
@@ -28,7 +29,7 @@ def main() -> int:
             print(f"이미 개체 {n}마리가 있습니다. 시드를 건너뜁니다.")
             return 0
 
-        for scenario in COLLARS:
+        for scenario in pick_scenarios(sys.argv[1:]):
             r = seed(scenario, conn)
             print(
                 f"  [{r['scenario']}] {r['dog_id']}  "
