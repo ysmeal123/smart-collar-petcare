@@ -124,7 +124,13 @@ const int UPLOAD_WHEN = MAX_SAMPLES / 2;
 
 // 검증된 펄스 모양 (esp32_spin 참고). HIGH 길게, LOW 짧게.
 const unsigned long HIGH_US = 1600;
-const unsigned long LOW_US  = 100;
+//: 2026-11-10: 100 → 1800. 한 바퀴 0.34초가 너무 세게 쳐서 절반 속도로 낮췄다.
+const unsigned long LOW_US  = 1800;
+
+//: 부드러운 출발. 첫 RAMP_STEPS 펄스 동안 RAMP_EXTRA_US 를 더 쉬었다가
+//: 0 까지 줄인다. 정지 상태에서 바로 최고속으로 치면 '툭' 하고 튄다.
+const int RAMP_STEPS = 60;
+const unsigned long RAMP_EXTRA_US = 4000;
 
 // EN (4개 드라이버 공용) → GPIO5. 배출하는 동안만 켠다.
 // 안 쓰면 DRV8825 가 대기 중에도 전류를 흘려 금방 뜨거워진다 (실물 확인).
@@ -635,7 +641,10 @@ static void turnSteps(int s, int steps) {
     digitalWrite(sl.stepPin, HIGH);
     delayMicroseconds(HIGH_US);
     digitalWrite(sl.stepPin, LOW);
-    delayMicroseconds(LOW_US);
+    unsigned long extra = 0;
+    int left = min(i, steps - 1 - i);          // 출발과 멈춤 둘 다 부드럽게
+    if (left < RAMP_STEPS) extra = RAMP_EXTRA_US * (RAMP_STEPS - left) / RAMP_STEPS;
+    delayMicroseconds(LOW_US + extra);
   }
 }
 
