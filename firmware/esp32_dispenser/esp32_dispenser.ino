@@ -1377,6 +1377,12 @@ static void reportState() {
     Serial.printf("[서버] 상태 보고 실패 (%d)\n", code);
     return;
   }
+  // 앱 [영점] (서버 경유). 급여 명령과 따로 온다.
+  if (scaleOk && out.indexOf("\"tare\":true") >= 0) {
+    scale.peel();
+    weightG = 0;
+    Serial.println("[저울] 앱 요청으로 영점");
+  }
   // **답에 명령이 같이 온다.** 따로 물어보면 왕복이 두 배가 되고,
   // 버튼을 누르고 모터가 돌기까지 조회 주기만큼 더 걸린다.
   takeCommand(out);

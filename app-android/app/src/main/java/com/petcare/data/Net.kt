@@ -174,7 +174,7 @@ object Net {
     // 밥통 — 서버를 거쳐 조작한다
     //
     // 앱이 ESP32 의 IP 로 직접 치면 같은 핫스팟에 있을 때만 된다.
-    // 서버에 명령을 쌓으면 밥통이 60초마다 가져가므로 집 밖에서도 되고,
+    // 서버에 명령을 쌓으면 밥통이 2초마다 가져가므로 집 밖에서도 되고,
     // 앱이 꺼져 있어도 급여는 나간다.
     // -----------------------------------------------------------------------
 
@@ -224,6 +224,14 @@ object Net {
         val state: FeederDeviceState? = null,
         val pending: Int = 0,
         @SerialName("last_ack") val lastAck: FeederAck? = null,
+        val leftover: FeederLeftover? = null,
+    )
+
+    /** 그릇에 남은 사료. 서버가 기준 이상이 된 뒤 지난 분을 센다. */
+    @Serializable
+    data class FeederLeftover(
+        val grams: Double? = null,
+        val minutes: Double = 0.0,
     )
 
     suspend fun feeder(
@@ -264,6 +272,11 @@ object Net {
      * **진행 중인 배출은 못 멈춘다.** 밥통이 이미 가져간 명령에는 손이 닿지
      * 않는다. 그건 같은 핫스팟에서 밥통에 직접 쳐야 한다.
      */
+    /** 밥그릇 저울 영점. 밥통이 다음 상태 보고(2초 안)의 답으로 받는다. */
+    suspend fun tareFeeder(
+        base: String, dogId: String, token: String = "",
+    ): String = request("$base/v1/dogs/$dogId/feeder/tare", "POST", "{}", token)
+
     suspend fun cancelDispense(
         base: String, dogId: String, token: String = "",
     ): String = request("$base/v1/dogs/$dogId/dispense/cancel", "POST", "{}", token)

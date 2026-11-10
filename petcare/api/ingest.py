@@ -11,6 +11,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 
 import json
+import os
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse
@@ -606,6 +607,32 @@ MANUAL_TTL = timedelta(minutes=10)
 #: 폴링 주기(60초)의 세 배. 한 번 놓쳐도 끊겼다고 하지 않는다.
 FEEDER_ONLINE = timedelta(minutes=3)
 
+#: 남은 사료 알림. 그릇에 LEFTOVER_G 이상이 LEFTOVER_MIN 분 넘게 남아 있으면
+#: 앱이 보호자에게 알린다. 안 먹는 것 자체가 건강 신호다 (식욕 저하).
+#:
+#: 분은 환경변수로 바꿀 수 있다. 시연에서는 1~2분으로 줄여 보여준다.
+LEFTOVER_G = float(os.environ.get("PEBBLE_LEFTOVER_G", "10"))
+LEFTOVER_MIN = float(os.environ.get("PEBBLE_LEFTOVER_MIN", "30"))
+
+
+def _leftover(state: dict, now: datetime) -> dict:
+    """그릇에 남은 양과 그 상태로 지난 분. 저울이 없으면 grams 가 None."""
+    w = state.get("weight_g", -1.0)
+    if w is None or w <= -1.0:
+        return {"grams": None, "minutes": 0, "alert": False,
+                "threshold_g": LEFTOVER_G, "after_min": LEFTOVER_MIN}
+    since = state.get("leftover_since")
+    minutes = 0.0
+    if since:
+        minutes = (now - datetime.fromisoformat(since)).total_seconds() / 60
+    return {
+        "grams": round(w, 1),
+        "minutes": round(minutes, 1),
+        "alert": bool(since) and minutes >= LEFTOVER_MIN,
+        "threshold_g": LEFTOVER_G,
+        "after_min": LEFTOVER_MIN,
+    }
+
 
 class ManualDispense(BaseModel):
     """
@@ -756,9 +783,50 @@ def put_feeder_state(dog_id: str, body: FeederStateIn) -> dict:
     with db.connect() as c:
         if db.get_dog(c, dog_id) is None:
             raise HTTPException(404, "등록되지 않은 개체입니다")
-        db.save_feeder_state(c, dog_id, body.model_dump_json(), now)
+
+        prev = db.feeder_state(c, dog_id)
+        old = prev[1] if prev else {}
+        state = body.model_dump()
+
+        # 앱이 [영점] 을 눌렀으면 이번 답에 실어 보내고 지운다.
+        tare = bool(old.get("tare_req"))
+
+        # 남은 사료: 기준 이상이 된 첫 시각을 이어서 들고 간다.
+        # 영점을 잡으면 그릇이 0 이 되므로 처음부터 다시 센다.
+        if body.weight_g >= LEFTOVER_G and not tare:
+            state["leftover_since"] = old.get("leftover_since") or now.isoformat(
+                timespec="seconds")
+        else:
+            state["leftover_since"] = None
+
+        db.save_feeder_state(c, dog_id, json.dumps(state, ensure_ascii=False), now)
         c.commit()
-        return {"ok": True, "commands": db.pending_commands(c, dog_id, now)}
+        out = {"ok": True, "commands": db.pending_commands(c, dog_id, now)}
+        if tare:
+            out["tare"] = True
+        return out
+
+
+@router.post("/dogs/{dog_id}/feeder/tare", dependencies=[Depends(require_app)])
+def request_tare(dog_id: str) -> dict:
+    """
+    앱 [영점] → 밥통이 다음 상태 보고(2초 안)의 답으로 받아 저울을 0 으로 맞춘다.
+
+    명령 큐에 넣지 않는다. 급여 명령과 섞이면 '대기 중 명령이 있어 409' 에
+    걸리고, 영점은 몇 번 눌러도 결과가 같아서 멱등키도 필요 없다.
+    """
+    with db.connect() as c:
+        if db.get_dog(c, dog_id) is None:
+            raise HTTPException(404, "등록되지 않은 개체입니다")
+        got = db.feeder_state(c, dog_id)
+        if got is None:
+            raise HTTPException(409, "밥통이 아직 한 번도 보고하지 않았습니다")
+        seen, state = got
+        state["tare_req"] = datetime.now().isoformat(timespec="seconds")
+        state["leftover_since"] = None
+        db.save_feeder_state(c, dog_id, json.dumps(state, ensure_ascii=False), seen)
+        c.commit()
+    return {"ok": True}
 
 
 @router.get("/dogs/{dog_id}/feeder", dependencies=[Depends(require_app)])
@@ -788,4 +856,5 @@ def feeder_view(dog_id: str) -> dict:
             "state": state,
             "pending": db.count_pending(c, dog_id, now),
             "last_ack": db.last_acked_command(c, dog_id),
+            "leftover": _leftover(state, now),
         }
