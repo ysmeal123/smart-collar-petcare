@@ -425,7 +425,7 @@ fun OnboardingScreen(initial: MyDog? = null, onDone: (MyDog) -> Unit) {
 
                 Step.ALLERGY -> QuestionBody(
                     title = "알러지가 있나요?",
-                    lead = "이 답이 처방을 직접 바꿉니다. 해당 성분은 아예 나오지 않아요.",
+                    lead = "이 답이 급여 계획을 직접 바꿉니다. 해당 성분은 아예 나오지 않아요.",
                 ) {
                     YesNo(
                         asked = allergyAsked,

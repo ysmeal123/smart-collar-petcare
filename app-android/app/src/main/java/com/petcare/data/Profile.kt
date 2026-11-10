@@ -229,7 +229,7 @@ object SafetyPreview {
             out += SafetyRule(
                 layer = "Layer 1",
                 title = "고지방 영양제를 전부 막습니다",
-                detail = "췌장염 병력이 있어 오메가3와 인지·항산화(MCT)를 처방하지 않습니다.",
+                detail = "췌장염 병력이 있어 오메가3와 인지·항산화(MCT)를 급여하지 않습니다.",
                 blocking = true,
             )
         }
@@ -238,7 +238,7 @@ object SafetyPreview {
             out += SafetyRule(
                 layer = "Layer 1",
                 title = "인지·항산화를 막습니다",
-                detail = "신장질환이 있어 해당 카트리지를 처방하지 않습니다.",
+                detail = "신장질환이 있어 해당 카트리지를 급여하지 않습니다.",
                 blocking = true,
             )
         }

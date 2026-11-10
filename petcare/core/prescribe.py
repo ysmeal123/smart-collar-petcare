@@ -124,7 +124,7 @@ def _apply_context(
         if a.axis in defer_axes:
             trace.append(TraceStep(
                 step=f"문진 · {a.axis.value} 보류",
-                detail="보호자 답변으로 원인이 설명됩니다 — 처방하지 않고 지켜봅니다.",
+                detail="보호자 답변으로 원인이 설명됩니다 — 영양제를 더하지 않고 지켜봅니다.",
                 changed=True,
             ))
         else:
@@ -160,7 +160,7 @@ def prescribe(
     if escalated:
         trace.append(TraceStep(step="🚨 긴급 정지", detail=reason, changed=True))
         trace.append(TraceStep(
-            step="처방 동결",
+            step="급여 계획 동결",
             detail="영양제를 전부 중단했습니다. 사료만 정상 급여합니다.",
             changed=True,
         ))
@@ -188,7 +188,7 @@ def prescribe(
     else:
         trace.append(TraceStep(
             step="상태 추론",
-            detail="모든 지표가 평소 범위입니다. 영양제를 처방하지 않습니다.",
+            detail="모든 지표가 평소 범위입니다. 영양제를 급여하지 않습니다.",
         ))
 
     # 보호자 답변은 용량 산출 **전**에 적용한다.
@@ -308,7 +308,7 @@ def prescribe(
             if axis_name in {a.axis.value for a in fired}:
                 trace.append(TraceStep(
                     step="일몰 검토",
-                    detail=f"{axis_name}축을 {SUNSET_WEEKS}주째 처방 중인데 "
+                    detail=f"{axis_name}축을 {SUNSET_WEEKS}주째 영양제를 주고 있는데 "
                            "개선이 없습니다. 병원 진료를 권합니다.",
                     changed=True,
                 ))

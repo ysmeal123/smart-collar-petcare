@@ -156,7 +156,7 @@ QUESTIONS: dict[HealthAxis, list[Question]] = {
         Question(
             key="noise", axis=HealthAxis.SLEEP,
             text="밤에 평소보다 시끄러운 일이 있었나요?",
-            why="공사나 손님은 며칠짜리 변화라 처방 대상이 아닙니다",
+            why="공사나 손님은 며칠짜리 변화라 급여 조정 대상이 아닙니다",
         ),
     ],
     HealthAxis.APPETITE: [
