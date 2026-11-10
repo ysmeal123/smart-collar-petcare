@@ -36,7 +36,7 @@
 | 성견 유지 에너지 | 1~2세 **130**, 3~7세 **110**, 7세 이상 **95** kcal/kg^0.75 | 🇰🇷 영양표준 표 2-5. k = 값 ÷ 70 → 1.857 / 1.571 / 1.357 |
 | RER | 70 × 체중^0.75 | 🌐 AAHA 2021 Nutrition and Weight Management Guidelines |
 | 중성화 여부 | **사용 안 함** | 🇰🇷 표 2-5 가 나이로만 나눔 (전에는 1.6/1.8 — 출처 없던 값) |
-| 체중 감량 | RER × 1.0 | 🌐 수의 임상 감량 관행 ❓원문 미대조. 한국 표준은 비만 위험군 ≤ 90 만 제시 |
+| 체중 감량 | RER × 1.0 (이상 체중 기준) | 🌐 AAHA 2021 Box 1 "Weight loss 1.0" (원문 확인). 한국 표준은 비만 위험군 ≤ 90 만 제시 |
 | 성장기 | 3.0 (4개월 미만) / 2.0 (4~12개월) | 🌐 기존 값 유지. 🇰🇷 표 2-7b 식은 예상 성체 체중이 필요해 미적용 |
 | 활동량 반영 | k ± 0.15 × z, 최대 ±15% | 🔧 한국 표준 "표는 활동량을 포함하지 않는다" → 목줄로 보정. 폭은 설계값 |
 | k 하한 | 1.0 | 원리 (하루 에너지가 기초대사 미만이면 안 됨) |
@@ -48,15 +48,15 @@
 
 | 성분 | 값 | 근거 |
 |---|---|---|
-| 오메가3 피부 / 관절 | 60 / 50 mg EPA+DHA | 🌐 Bauer 2011 JAVMA 인용 임상 범위보다 **낮음**. 🇰🇷 성견 기준 없음 ("권장량 결정에 근거 불충분") |
-| 글루코사민 | 15 mg | ❓ 공개 권장치 15~100mg 로 엇갈림. 🇰🇷 등록된 보조사료 원료, 사용량 제한 못 찾음 |
-| 아연 (피부장벽) | 0.4 mg | ❓ |
+| 오메가3 피부 / 관절 | 60 / 50 mg EPA+DHA | 🌐 Bauer 2011 (원문 확인): 피부는 권장 50~90 mg/kg 의 **아래쪽 안**, 관절은 권장 230~310 mg/kg^0.75 보다 **훨씬 낮음**. 🇰🇷 성견 기준 없음 |
+| 글루코사민 | 15 mg | 🌐 정해진 치료 용량 없음 (Bhathal 2017 리뷰). 임상시험 약 35~95 mg/kg 보다 **훨씬 낮은 보수적 값**. 🇰🇷 등록 원료, 사용량 제한 못 찾음 |
+| 아연 (피부장벽) | 0.4 mg | 🌐 보충 권장량 없음. 피부병 치료 시작 용량 1~3 mg/kg (White 2001, Colombini 1997) 보다 **낮은 보수적 값** |
 
 ## 3. 안전 상한
 
 | 성분 | 값 | 근거 |
 |---|---|---|
-| EPA+DHA | 체중 1kg 당 100mg × 0.8 | 🌐 NRC 2006 SUL(370 mg/kg^0.75)보다 항상 낮음. 🇰🇷 없음 |
+| EPA+DHA | 체중 1kg 당 100mg × 0.8 | 🌐 NRC 2006 SUL(370 mg/kg^0.75, Bauer 2011 표 1 에서 확인)보다 항상 낮음. 🇰🇷 없음 |
 | **아연** | **완전사료 1kg 당 200mg, 사료+영양제 합계** | 🌐 EU 2016/1095 법정 최대치. 🇰🇷 최대치 없음 (최소 7.2mg/건물 100g 만 있음) |
 | 비타민E / 구리 / MCT | 10IU / 0.5mg / 500mg (체중 1kg 당) | ❓ 지금 장착 카트리지에 없어 실제로는 걸리지 않음 |
 | 글루코사민·MSM·녹색입홍합 | 없음 (기계 제한 하루 20알) | ❓ 어느 기준에도 상한 없음 — 수의사와 정할 것 |
@@ -67,6 +67,7 @@
 
 | 항목 | 값 | 근거 |
 |---|---|---|
+| z-score 방식 | 중앙값·MAD 기반 로버스트 z | 🌐 표준 통계 기법 (Iglewicz & Hoaglin 1993, NIST e-Handbook §1.3.5.17). **z 를 용량으로 잇는 규칙은 🔧 설계** |
 | MAD → σ | 1.4826 | 통계 상수 (정규분포) |
 | 중앙값 표준오차 | × 1.253 (√(π/2)) ÷ √n | 통계 상수 |
 | 평소 / 최근 | 30일 / 7일(피부)·14일(관절) | 🔧 |
@@ -103,6 +104,11 @@
   — nias.go.kr 보도뉴스 2024-10-25 첨부 "반려동물 사료 영양표준-내지 vf..pdf"
 - 농림축산식품부 고시 「사료 등의 기준 및 규격」 [별표 15의2] 반려동물사료의 기타 표시사항 — law.go.kr
 - AAHA 2021 Nutrition and Weight Management Guidelines for Dogs and Cats (Cline et al., JAAHA)
-- NRC (2006) Nutrient Requirements of Dogs and Cats — **2차 인용으로만 확인**
-- Bauer JE (2011) Therapeutic use of fish oils in companion animals. JAVMA 239(11):1441-1451 — **2차 인용으로만 확인**
+- NRC (2006) Nutrient Requirements of Dogs and Cats — 책 원문 미확인, Bauer 2011 표 1 로 확인
+- Bauer JE (2011) Therapeutic use of fish oils in companion animals. JAVMA 239(11):1441-1451, doi:10.2460/javma.239.11.1441
+- Cline MG et al. (2021) 2021 AAHA Nutrition and Weight Management Guidelines for Dogs and Cats. JAAHA 57:153-178, doi:10.5326/JAAHA-MS-7232
+- Bhathal A et al. (2017) Glucosamine and chondroitin use in canines for osteoarthritis: a review. Open Vet J 7(1):36-49
+- White SD et al. (2001) Zinc-responsive dermatosis in dogs: 41 cases. Vet Dermatol 12(2):101-109
+- Colombini S, Dunstan RW (1997) Zinc-responsive dermatosis in northern-breed dogs. JAVMA 211(4):451-453
+- Iglewicz B, Hoaglin DC (1993) How to Detect and Handle Outliers. ASQC Quality Press
 - Commission Implementing Regulation (EU) 2016/1095 — 아연 최대 함량
