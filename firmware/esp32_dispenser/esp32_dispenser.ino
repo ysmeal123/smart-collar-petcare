@@ -274,7 +274,7 @@ int nShakes = 0;
 //: 밥통이 켜진 뒤 받은 털기 수. **화면 표시용**이다 (서버 기록은 shakes[] 가 한다).
 //:
 //: 1분 요약의 shake_n 은 1분이 지나야 바뀌어서, 흔들어 보여줄 때 숫자가
-//: 바로 안 오른다. 털기 이벤트가 올 때마다 하나씩 올린다.
+//: 바로 안 오른다. 1초 판정이 털기로 바뀔 때마다 하나씩 올린다 (onNow).
 volatile uint32_t shakeLive = 0;
 
 /**
@@ -410,6 +410,10 @@ static inline int clsRank(int c) {
 
 static void onNow(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) {
   if (len < 10 || data[0] > 3) return;
+  // 털기가 **시작될 때** 하나 센다 (목줄이 1분 요약에서 세는 방식과 같다).
+  // 털기 이벤트(shk) 는 목줄이 구독을 확인한 뒤에야 보내서, 그게 막히면
+  // 화면 숫자도 같이 멈췄다. 1초 판정은 항상 오므로 이쪽이 확실하다.
+  if (data[0] == 3 && nowCls != 3) shakeLive++;
   nowCls = data[0];
   nowConf = data[1];
   nowAt = millis();
@@ -504,7 +508,7 @@ static void onShake(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool
   for (int i = 0; i < nShakes; i++) {
     if (shakes[i].bootId == e.bootId && shakes[i].seq == e.seq) return;
   }
-  if (pushShake(e)) shakeLive++;
+  pushShake(e);
 }
 
 static void startCollarScan() {
