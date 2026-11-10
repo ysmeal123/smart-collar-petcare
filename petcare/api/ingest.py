@@ -647,6 +647,9 @@ class FeederStateIn(BaseModel):
     minute: dict[str, int] = Field(default_factory=dict)
     #: 밥통이 켜진 뒤 받은 털기 수. 화면에 바로 오르는 숫자 (기록은 /ingest 가 한다).
     shake_live: int = Field(default=0, ge=0)
+    #: 밥그릇 저울의 지금 무게(g). 그릇 무게는 영점으로 뺀 값이다.
+    #: -1 = 저울 없음. 영점 근처에서는 -0.3 처럼 살짝 음수가 나올 수 있다.
+    weight_g: float = Field(default=-1.0, ge=-2000, le=5000)
 
 
 @router.post("/dogs/{dog_id}/dispense", dependencies=[Depends(require_app)])

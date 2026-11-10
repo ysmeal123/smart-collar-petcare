@@ -150,6 +150,7 @@ fun FeederSheet(
             if (connected) {
                 Spacer(Modifier.height(T.md))
                 CollarCard(status?.collar)
+                ScaleCard(status?.weightG ?: -1.0)
             }
 
             // --- 오늘 계획 --------------------------------------------------
@@ -394,12 +395,30 @@ private fun CollarCard(collar: Feeder.Collar?) {
         }
 
         val m = collar?.min
-        if (m != null && m.size >= 4 && (collar?.minAge ?: -1) >= 0) {
+        // 밥통이 1초 판정으로 직접 세므로 min_age 가 없어도(-1) 값이 차 있으면 보인다.
+        if (m != null && m.size >= 4 && ((collar?.minAge ?: -1) >= 0 || m.sum() > 0)) {
             Spacer(Modifier.height(T.xs))
             Text(
                 "최근 1분 · 쉬기 ${m[0]}초 · 걷기 ${m[1]}초 · 뛰기 ${m[2]}초 · 털기 ${m[3]}회",
                 style = T.finePrint,
             )
+        }
+    }
+}
+
+/** 밥그릇 저울. 사료가 나오는 동안 숫자가 오르는 걸 보여준다. */
+@Composable
+private fun ScaleCard(weightG: Double) {
+    if (weightG <= -1.0) return            // 저울 없는 밥통
+    Spacer(Modifier.height(T.xs))
+    Column(modifier = Modifier.fillMaxWidth().utilityCard(padding = T.md)) {
+        Text("밥그릇 무게", style = T.captionStrong)
+        Spacer(Modifier.height(T.xs))
+        Row(verticalAlignment = Alignment.Bottom) {
+            // 영점 근처 흔들림(-0.3g 등)은 0 으로 보여준다.
+            val g = if (weightG < 0.5) 0.0 else weightG
+            Text(String.format(java.util.Locale.US, "%.1f", g), style = T.displayMd)
+            Text(" g", style = T.caption.copy(color = T.inkMuted48))
         }
     }
 }

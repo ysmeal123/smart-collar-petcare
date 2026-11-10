@@ -200,6 +200,8 @@ object Net {
         val minute: FeederMinute = FeederMinute(),
         /** 밥통이 켜진 뒤 받은 털기 수. */
         @SerialName("shake_live") val shakeLive: Int = -1,
+        /** 밥그릇 저울 g (-1 = 저울 없음). */
+        @SerialName("weight_g") val weightG: Double = -1.0,
     )
 
     @Serializable

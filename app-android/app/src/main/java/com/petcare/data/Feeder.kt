@@ -136,6 +136,8 @@ object Feeder {
         val stopped: Boolean = false,
         val slots: List<Slot> = emptyList(),
         val collar: Collar? = null,
+        /** 밥그릇 저울 g. 그릇 무게는 영점으로 뺐다. -1 = 저울 없음 */
+        @kotlinx.serialization.SerialName("weight_g") val weightG: Double = -1.0,
         // --- 아래는 ESP32 가 보내지 않는다. 서버 경유일 때만 채운다 ---
         val via: String = VIA_DIRECT,
         /** 밥통이 마지막으로 보고한 뒤 지난 초. -1 = 모름 */
@@ -244,6 +246,7 @@ object Feeder {
                     staleAfter = 30,
                 )
             },
+            weightG = s?.weightG ?: -1.0,
             via = VIA_SERVER,
             ageS = age,
             pending = v.pending,
