@@ -30,6 +30,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.petcare.data.Feeder
 import com.petcare.data.FeederStore
+import com.petcare.data.FeedingPlan
 import com.petcare.data.MyDog
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -42,13 +43,19 @@ import kotlinx.coroutines.launch
  *     직접        같은 핫스팟의 ESP32 에 바로 쳐서 1초 안에 돈다 (시연용)
  *
  * 슬롯마다 수량을 정하고 [배출]을 누르면 그 모터만 돈다.
+ * [오늘 계획대로 급여] 는 서버가 짠 하루치(영양제 + 사료)를 명령 하나로 보낸다.
  *
  * 화면이 떠 있는 동안 상태를 읽어서 버튼 활성 여부와 진행 표시를 전부
  * 그 값에서 낸다. **앱이 "돌고 있을 것" 이라고 추측하지 않는다.**
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun FeederSheet(store: FeederStore, dog: MyDog, onDismiss: () -> Unit) {
+fun FeederSheet(
+    store: FeederStore,
+    dog: MyDog,
+    plan: FeedingPlan? = null,
+    onDismiss: () -> Unit,
+) {
     val state = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val scope = rememberCoroutineScope()
 
@@ -143,6 +150,43 @@ fun FeederSheet(store: FeederStore, dog: MyDog, onDismiss: () -> Unit) {
             if (connected) {
                 Spacer(Modifier.height(T.md))
                 CollarCard(status?.collar)
+            }
+
+            // --- 오늘 계획 --------------------------------------------------
+            //
+            // 끼니별 알 수를 슬롯마다 더하고, 사료는 하루 합계를 쓴다.
+            // 판정은 서버가 했다. 앱은 숫자를 옮기기만 한다.
+            val dayPellets = plan?.meals.orEmpty()
+                .flatMap { it.pellets }
+                .groupBy { it.slot }
+                .mapValues { (_, ps) -> ps.sumOf { it.count } }
+                .filterValues { it > 0 }
+            val dayFood = plan?.totalFoodG ?: 0
+            if (plan != null && plan.ready && !plan.escalated && (dayPellets.isNotEmpty() || dayFood > 0)) {
+                Spacer(Modifier.height(T.lg))
+                Column(modifier = Modifier.fillMaxWidth().utilityCard(padding = T.md)) {
+                    Text("오늘 급여 계획", style = T.captionStrong)
+                    Spacer(Modifier.height(T.xxs))
+                    val names = plan.meals.flatMap { it.pellets }.associate { it.slot to it.name }
+                    val parts = dayPellets.toSortedMap().map { (slot, n) ->
+                        "${names[slot] ?: "${slot}번"} ${n}알"
+                    } + listOfNotNull(if (dayFood > 0) "사료 ${dayFood}g" else null)
+                    Text(parts.joinToString(" · "), style = T.caption)
+                    Spacer(Modifier.height(T.sm))
+                    PrimaryPill(
+                        label = "오늘 계획대로 급여",
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = canSend,
+                        onClick = {
+                            val req = "plan-${System.currentTimeMillis()}"
+                            send(
+                                { Feeder.dispensePlan(link, dayPellets, dayFood, req) },
+                                if (link.viaServer) "오늘 계획 전송 — 밥통이 곧 가져갑니다"
+                                else "오늘 계획 배출 시작",
+                            )
+                        },
+                    )
+                }
             }
 
             Spacer(Modifier.height(T.lg))
@@ -336,6 +380,16 @@ private fun CollarCard(collar: Feeder.Collar?) {
                 Text(collar.behavior ?: "-", style = T.displayMd)
                 Spacer(Modifier.width(T.xs))
                 Text("${collar.conf}%", style = T.caption.copy(color = T.inkMuted48))
+            }
+        }
+
+        // 털 때마다 바로 오른다. 시연에서 "센서가 진짜로 잡는다" 를 보여주는 숫자.
+        if (collar != null && collar.shakes >= 0) {
+            Spacer(Modifier.height(T.xs))
+            Row(verticalAlignment = Alignment.Bottom) {
+                Text("털기 ", style = T.caption.copy(color = T.inkMuted48))
+                Text("${collar.shakes}", style = T.displayMd)
+                Text("회 (밥통 켜진 뒤)", style = T.caption.copy(color = T.inkMuted48))
             }
         }
 

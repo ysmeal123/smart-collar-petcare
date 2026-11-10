@@ -163,7 +163,9 @@ def record_manual_weight(conn, dog_id: str, at: datetime, kg: float) -> dict:
 # 2. 처방
 # ---------------------------------------------------------------------------
 
-def recompute(conn, dog_id: str, today: date | None = None) -> dict | None:
+def recompute(
+    conn, dog_id: str, today: date | None = None, reset_food: bool = False,
+) -> dict | None:
     """
     저장된 하루 요약들로 **급여 계획**을 만든다.
 
@@ -172,6 +174,11 @@ def recompute(conn, dog_id: str, today: date | None = None) -> dict | None:
 
     직전 처방이 남긴 상태를 이어받는다. 이게 없으면 히스테리시스와 슬루율
     제한이 매일 초기화되어 처방이 켜졌다 꺼졌다 발진한다.
+
+    reset_food: 보호자가 체중·나이 같은 **개 정보 자체를 고쳤을 때** 쓴다.
+    '전날 대비 ±10%' 는 같은 개의 하루 변화를 막는 장치라, 정보를 고친
+    것까지 막으면 5kg 를 20kg 로 고쳐도 사료가 10% 만 는다.
+    축 상태(히스테리시스)는 그대로 이어받는다.
     """
     raw = db.get_dog(conn, dog_id)
     if raw is None:
@@ -184,6 +191,8 @@ def recompute(conn, dog_id: str, today: date | None = None) -> dict | None:
 
     prev = db.latest_state(conn, dog_id)
     state = PrescriptionState.model_validate(prev) if prev else PrescriptionState()
+    if reset_food:
+        state = state.model_copy(update={"prev_food_grams": None})
 
     answers, answered_at = db.load_context(conn, dog_id)
     context = Context(

@@ -81,6 +81,30 @@ object Net {
         }
     }
 
+    /** 기본값도 빠짐없이 보낸다. 빠지면 서버가 옛 값을 그대로 둔다 (중성화 false 등). */
+    private val fullJson = Json { encodeDefaults = true }
+
+    /** 서버로 보내는 개 정보. 서버 연결 정보(토큰 등)와 앱 전용 값은 뺀다. */
+    private val PROFILE_KEYS = setOf(
+        "name", "age_months", "sex", "neutered", "weight_kg", "body_condition",
+        "size", "meals_per_day", "breeds", "allergies", "surgeries",
+        "conditions", "medications",
+    )
+
+    /**
+     * 온보딩에서 고른 개 정보를 서버에 올린다. 서버가 바뀐 것이 있으면
+     * 계획을 다시 만든다 (같으면 아무것도 안 한다).
+     *
+     * 행동 기록은 목줄 것 그대로다. 이름·견종·체중만 이 개의 것으로 바뀐다.
+     */
+    suspend fun putProfile(base: String, dogId: String, dog: MyDog, token: String = "") {
+        val all = fullJson.encodeToJsonElement(MyDog.serializer(), dog)
+        val body = kotlinx.serialization.json.JsonObject(
+            (all as kotlinx.serialization.json.JsonObject).filterKeys { it in PROFILE_KEYS }
+        )
+        request("$base/v1/dogs/$dogId/profile", "POST", body.toString(), token)
+    }
+
     suspend fun dashboard(base: String, dogId: String, token: String = ""): Dashboard {
         val raw = request("$base/v1/dogs/$dogId/dashboard", token = token)
         return json.decodeFromString(raw)
@@ -174,6 +198,8 @@ object Net {
         /** 그 판정이 몇 초 전이었나. 밥통이 보고한 시점 기준. */
         @SerialName("collar_age_s") val collarAgeS: Int = 0,
         val minute: FeederMinute = FeederMinute(),
+        /** 밥통이 켜진 뒤 받은 털기 수. */
+        @SerialName("shake_live") val shakeLive: Int = -1,
     )
 
     @Serializable

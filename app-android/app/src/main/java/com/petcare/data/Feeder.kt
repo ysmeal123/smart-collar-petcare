@@ -99,6 +99,12 @@ object Feeder {
         val min: List<Int> = emptyList(),
         @kotlinx.serialization.SerialName("min_age") val minAge: Int = -1,
         /**
+         * 밥통이 켜진 뒤 받은 털기 수 (-1 = 펌웨어가 안 보냄).
+         *
+         * 1분 요약은 1분이 지나야 바뀐다. 이 값은 털 때마다 바로 오른다.
+         */
+        val shakes: Int = -1,
+        /**
          * 이 초를 넘으면 '지금 행동' 으로 안 보여준다.
          *
          * 직접 경로는 1초마다 읽으니 5초면 넉넉하다. 서버 경유는 밥통이
@@ -196,9 +202,11 @@ object Feeder {
     private suspend fun directStatus(base: String): Status =
         json.decodeFromString(call("${norm(base)}/status"))
 
-    /** 한 끼 전체. counts[0] = 슬롯 1. 직접 경로에서만 쓴다. */
-    suspend fun meal(base: String, counts: List<Int>) {
-        val form = counts.mapIndexed { i, c -> "s${i + 1}" to (c as Any) }.toMap()
+    /** 한 끼 전체. pellets = 슬롯 -> 알 수, 사료는 [foodG] 그램. 직접 경로에서만 쓴다. */
+    private suspend fun meal(base: String, pellets: Map<Int, Int>, foodG: Int) {
+        val form = mutableMapOf<String, Any>()
+        pellets.forEach { (slot, n) -> if (slot != FOOD_SLOT) form["s$slot"] = n }
+        form["g"] = foodG
         call("${norm(base)}/meal", form)
     }
 
@@ -231,6 +239,7 @@ object Feeder {
                         it.minute.runS, it.minute.shakeN,
                     ),
                     minAge = age,
+                    shakes = it.shakeLive,
                     // 밥통이 2초마다 보고한다. 한두 번 놓쳐도 낡았다고 하지 않는다.
                     staleAfter = 30,
                 )
@@ -263,6 +272,33 @@ object Feeder {
         throw e
     } catch (e: Exception) {
         throw Failed(serverError(e.message))
+    }
+
+    /**
+     * 급여 계획 한 번에. 영양제 여러 슬롯 + 사료를 **명령 하나로** 보낸다.
+     *
+     * 슬롯마다 따로 보내면 서버가 두 번째부터 "대기 중인 명령이 있다" 고
+     * 막는다 (이중 급여 방지). 계획은 원래 한 끼 단위이므로 한 덩어리가 맞다.
+     */
+    suspend fun dispensePlan(
+        link: Link, pellets: Map<Int, Int>, foodG: Int, requestId: String = "",
+    ) {
+        try {
+            if (link.viaServer) {
+                Net.dispense(
+                    link.serverBase, link.serverDogId,
+                    pellets = pellets.filterKeys { it != FOOD_SLOT },
+                    foodG = foodG.toDouble(),
+                    requestId = requestId, token = link.serverToken,
+                )
+            } else {
+                meal(link.direct, pellets, foodG)
+            }
+        } catch (e: Failed) {
+            throw e
+        } catch (e: Exception) {
+            throw Failed(serverError(e.message))
+        }
     }
 
     /**
