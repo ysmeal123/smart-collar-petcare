@@ -278,3 +278,55 @@ def test_마지막_실행_결과를_본다(tmpdb, loaded_123):
     assert ack["id"] == cmd_id
     assert ack["state"] == "done"
     assert ack["result"] == "3알"
+
+
+# ---------------------------------------------------------------------------
+# 밥그릇 저울: 영점 · 남은 사료 알림
+# ---------------------------------------------------------------------------
+
+def _age_leftover(path, minutes: float) -> None:
+    """남은 사료가 시작된 시각을 과거로 돌린다 (기다리지 않고 시간 경과를 만든다)."""
+    with db.connect(path) as c:
+        seen, state = db.feeder_state(c, DOG)
+        state["leftover_since"] = (
+            datetime.now() - timedelta(minutes=minutes)
+        ).isoformat(timespec="seconds")
+        db.save_feeder_state(c, DOG, json.dumps(state), seen)
+        c.commit()
+
+
+def test_영점을_누르면_다음_보고의_답에_한_번만_실린다(tmpdb):
+    ingest.put_feeder_state(DOG, ingest.FeederStateIn(weight_g=58.0))
+    assert ingest.request_tare(DOG)["ok"]
+    assert ingest.put_feeder_state(DOG, ingest.FeederStateIn(weight_g=58.0))["tare"]
+    assert "tare" not in ingest.put_feeder_state(DOG, ingest.FeederStateIn(weight_g=0.0))
+
+
+def test_보고가_없으면_영점을_받지_않는다(tmpdb):
+    with pytest.raises(HTTPException) as e:
+        ingest.request_tare(DOG)
+    assert e.value.status_code == 409
+
+
+def test_사료가_오래_남아_있으면_알린다(tmpdb):
+    ingest.put_feeder_state(DOG, ingest.FeederStateIn(weight_g=40.0))
+    left = ingest.feeder_view(DOG)["leftover"]
+    assert left["grams"] == 40.0 and not left["alert"]
+
+    _age_leftover(tmpdb, ingest.LEFTOVER_MIN + 1)
+    ingest.put_feeder_state(DOG, ingest.FeederStateIn(weight_g=39.5))   # 시작 시각은 이어진다
+    assert ingest.feeder_view(DOG)["leftover"]["alert"]
+
+
+def test_다_먹으면_알림이_꺼진다(tmpdb):
+    ingest.put_feeder_state(DOG, ingest.FeederStateIn(weight_g=40.0))
+    _age_leftover(tmpdb, ingest.LEFTOVER_MIN + 1)
+    ingest.put_feeder_state(DOG, ingest.FeederStateIn(weight_g=2.0))
+    left = ingest.feeder_view(DOG)["leftover"]
+    assert not left["alert"] and left["minutes"] == 0
+
+
+def test_저울이_없으면_무게도_알림도_없다(tmpdb):
+    ingest.put_feeder_state(DOG, ingest.FeederStateIn())
+    left = ingest.feeder_view(DOG)["leftover"]
+    assert left["grams"] is None and not left["alert"]

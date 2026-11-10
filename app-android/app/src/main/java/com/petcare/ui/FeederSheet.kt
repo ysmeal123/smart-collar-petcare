@@ -32,6 +32,12 @@ import com.petcare.data.Feeder
 import com.petcare.data.FeederStore
 import com.petcare.data.FeedingPlan
 import com.petcare.data.MyDog
+import com.petcare.data.Notify
+import android.Manifest
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -87,6 +93,29 @@ fun FeederSheet(
         )
     }
     val counts = remember { mutableStateListOf(1, 1, 1, 40) }
+
+    // 남은 사료 알림. 처음 열 때 알림 권한을 묻고(Android 13+),
+    // 기준을 넘는 순간 한 번만 울린다. 다 먹으면 다시 울릴 수 있게 풀린다.
+    val ctx = LocalContext.current
+    val askNotify = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { }
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= 33 && !Notify.allowed(ctx)) {
+            askNotify.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+    var notified by remember { mutableStateOf(false) }
+    val leftAlert = status?.leftoverAlert == true
+    LaunchedEffect(leftAlert) {
+        val st = status
+        if (leftAlert && !notified && st != null) {
+            Notify.leftover(ctx, dog.name.ifBlank { "우리 아이" }, st.weightG, st.leftoverMin.toInt())
+            notified = true
+        } else if (!leftAlert) {
+            notified = false
+        }
+    }
 
     // 밥통이 2초마다 보고한다. 앱이 그보다 느리게 읽으면 그만큼 더 늦는다.
     val pollMs = if (link.viaServer) 1_500L else 1_000L
@@ -150,6 +179,10 @@ fun FeederSheet(
             if (connected) {
                 Spacer(Modifier.height(T.md))
                 CollarCard(status?.collar)
+                ScaleCard(
+                    status = status,
+                    onTare = { send({ Feeder.tare(link) }, "영점을 맞췄습니다. 그릇이 0g 이 됩니다") },
+                )
             }
 
             // --- 오늘 계획 --------------------------------------------------
@@ -209,7 +242,7 @@ fun FeederSheet(
                         val req = "btn-${s.slot}-${System.currentTimeMillis()}"
                         send(
                             { Feeder.dispense(link, s.slot, c, req) },
-                            if (link.viaServer) "${s.name} ${c}${s.unit} — 밥통이 1분 안에 가져갑니다"
+                            if (link.viaServer) "${s.name} ${c}${s.unit} — 밥통이 몇 초 안에 가져갑니다"
                             else "${s.name} ${c}${s.unit} 배출 시작",
                         )
                     },
@@ -338,7 +371,7 @@ private fun RouteToggle(route: String, canServer: Boolean, onPick: (String) -> U
             when {
                 !canServer -> "설정에서 서버 주소를 넣으면 서버 경유를 쓸 수 있습니다."
                 route == Feeder.VIA_SERVER ->
-                    "명령을 서버에 맡깁니다. 집 밖에서도 되고, 밥통이 1분 안에 가져갑니다."
+                    "명령을 서버에 맡깁니다. 집 밖에서도 되고, 밥통이 몇 초 안에 가져갑니다."
                 else ->
                     "같은 핫스팟의 밥통에 바로 보냅니다. 1초 안에 돌지만 밖에서는 안 됩니다."
             },
@@ -394,10 +427,66 @@ private fun CollarCard(collar: Feeder.Collar?) {
         }
 
         val m = collar?.min
-        if (m != null && m.size >= 4 && (collar?.minAge ?: -1) >= 0) {
+        // 밥통이 1초 판정으로 직접 세므로 min_age 가 없어도(-1) 값이 차 있으면 보인다.
+        if (m != null && m.size >= 4 && ((collar?.minAge ?: -1) >= 0 || m.sum() > 0)) {
             Spacer(Modifier.height(T.xs))
             Text(
                 "최근 1분 · 쉬기 ${m[0]}초 · 걷기 ${m[1]}초 · 뛰기 ${m[2]}초 · 털기 ${m[3]}회",
+                style = T.finePrint,
+            )
+        }
+    }
+}
+
+/**
+ * 밥그릇 저울. 사료가 나오는 동안 숫자가 오르는 걸 보여준다.
+ *
+ * **g 숫자는 항상 보인다.** 저울이 없거나 아직 못 읽었으면 '--' 로 두고
+ * 이유를 적는다 - 카드가 사라지면 저울이 있는지조차 알 수 없다.
+ */
+@Composable
+private fun ScaleCard(status: Feeder.Status?, onTare: () -> Unit) {
+    val has = status?.hasScale == true
+    val w = status?.weightG ?: -1.0
+    Spacer(Modifier.height(T.xs))
+    Column(modifier = Modifier.fillMaxWidth().utilityCard(padding = T.md)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("밥그릇 무게", style = T.captionStrong)
+                Spacer(Modifier.height(T.xs))
+                Row(verticalAlignment = Alignment.Bottom) {
+                    // 영점 근처 흔들림(-0.3g 등)은 0 으로 보여준다.
+                    val text = when {
+                        !has -> "--"
+                        w < 0.5 -> "0.0"
+                        else -> String.format(java.util.Locale.US, "%.1f", w)
+                    }
+                    Text(text, style = T.displayMd)
+                    Text(" g", style = T.caption.copy(color = T.inkMuted48))
+                }
+            }
+            PrimaryPill(label = "영점", enabled = has, onClick = onTare)
+        }
+        Spacer(Modifier.height(T.xxs))
+        Text(
+            when {
+                status == null -> "밥통에 연결되면 무게가 보입니다"
+                !has -> "저울이 연결되지 않았습니다 (밥통 펌웨어·배선 확인)"
+                else -> "그릇을 올리고 [영점]을 누르면 그릇 무게가 빠집니다"
+            },
+            style = T.finePrint,
+        )
+        if (status != null && status.leftoverAlert) {
+            Spacer(Modifier.height(T.xs))
+            Text(
+                "사료 ${w.toInt()}g이 ${status.leftoverMin.toInt()}분째 남아 있어요. 식욕을 확인해 주세요.",
+                style = T.captionStrong.copy(color = androidx.compose.ui.graphics.Color(0xFFD70015)),
+            )
+        } else if (has && w >= Feeder.LEFTOVER_G && status!!.leftoverMin > 0) {
+            Spacer(Modifier.height(T.xs))
+            Text(
+                "남은 사료 ${w.toInt()}g · ${status.leftoverMin.toInt()}분째 " +
+                    "(${Feeder.LEFTOVER_MIN.toInt()}분 넘으면 알림)",
                 style = T.finePrint,
             )
         }

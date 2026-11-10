@@ -4,6 +4,8 @@
     <!-- 서버가 있으면 서버, 없으면 asset 으로 내려간다. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- 밥이 오래 남아 있을 때 보호자에게 알린다 (Android 13+ 는 실행 중 허락). -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:allowBackup="true"

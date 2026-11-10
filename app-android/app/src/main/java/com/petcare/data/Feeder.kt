@@ -13,7 +13,7 @@ import java.net.URLEncoder
 /**
  * 밥통 제어. **경로가 둘이다.**
  *
- *     서버 경유   앱 -> 서버에 명령 적재 -> 밥통이 60초마다 가져감
+ *     서버 경유   앱 -> 서버에 명령 적재 -> 밥통이 2초마다 상태를 보고하며 가져감
  *     직접        앱 -> ESP32 의 IP 로 바로 HTTP
  *
  * 평소에는 서버를 쓴다. 집 밖에서도 되고, 앱이 꺼져 있어도 급여가 나간다.
@@ -41,6 +41,18 @@ object Feeder {
 
     /** 사료 슬롯. 서버와 같은 단위(그램)를 쓴다. */
     const val FOOD_SLOT = 4
+
+    /**
+     * 남은 사료 알림 기준. 그릇에 [LEFTOVER_G] 이상이 [LEFTOVER_MIN] 분 넘게
+     * 그대로면 알린다. 안 먹는 것 자체가 식욕 저하 신호다.
+     *
+     * 시연에서는 1~2분으로 줄여서 보여준다.
+     */
+    const val LEFTOVER_G = 10.0
+    const val LEFTOVER_MIN = 30.0
+
+    /** 직접 경로에서 남은 사료가 시작된 시각. 서버 경로는 서버가 센다. */
+    private var directLeftSince = 0L
 
     /**
      * 어디로 보낼지. 화면이 이걸 들고 다닌다.
@@ -136,13 +148,21 @@ object Feeder {
         val stopped: Boolean = false,
         val slots: List<Slot> = emptyList(),
         val collar: Collar? = null,
+        /** 밥그릇 저울 g. 그릇 무게는 영점으로 뺐다. -1 = 저울 없음 */
+        @kotlinx.serialization.SerialName("weight_g") val weightG: Double = -1.0,
         // --- 아래는 ESP32 가 보내지 않는다. 서버 경유일 때만 채운다 ---
         val via: String = VIA_DIRECT,
         /** 밥통이 마지막으로 보고한 뒤 지난 초. -1 = 모름 */
         val ageS: Int = -1,
         /** 아직 밥통이 안 가져간 명령 수. */
         val pending: Int = 0,
-    )
+        /** 그릇에 기준 이상이 남은 채 지난 분. */
+        val leftoverMin: Double = 0.0,
+    ) {
+        val hasScale: Boolean get() = weightG > -1.0
+        val leftoverAlert: Boolean
+            get() = hasScale && weightG >= LEFTOVER_G && leftoverMin >= LEFTOVER_MIN
+    }
 
     @Serializable
     private data class Reply(val ok: Boolean = false, val error: String = "")
@@ -244,9 +264,11 @@ object Feeder {
                     staleAfter = 30,
                 )
             },
+            weightG = s?.weightG ?: -1.0,
             via = VIA_SERVER,
             ageS = age,
             pending = v.pending,
+            leftoverMin = v.leftover?.minutes ?: 0.0,
         )
     }
 
@@ -266,12 +288,39 @@ object Feeder {
         if (link.viaServer) {
             fromServer(Net.feeder(link.serverBase, link.serverDogId, link.serverToken))
         } else {
-            directStatus(link.direct)
+            directStatus(link.direct).let { st ->
+                val now = System.currentTimeMillis()
+                if (st.weightG >= LEFTOVER_G) {
+                    if (directLeftSince == 0L) directLeftSince = now
+                } else {
+                    directLeftSince = 0L
+                }
+                st.copy(
+                    leftoverMin = if (directLeftSince == 0L) 0.0
+                    else (now - directLeftSince) / 60_000.0,
+                )
+            }
         }
     } catch (e: Failed) {
         throw e
     } catch (e: Exception) {
         throw Failed(serverError(e.message))
+    }
+
+    /** 밥그릇 저울을 0g 으로. 그릇을 바꿨을 때 누른다. */
+    suspend fun tare(link: Link) {
+        try {
+            if (link.viaServer) {
+                Net.tareFeeder(link.serverBase, link.serverDogId, link.serverToken)
+            } else {
+                call("${norm(link.direct)}/tare", emptyMap())
+            }
+            directLeftSince = 0L
+        } catch (e: Failed) {
+            throw e
+        } catch (e: Exception) {
+            throw Failed(serverError(e.message))
+        }
     }
 
     /**
