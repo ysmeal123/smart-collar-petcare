@@ -155,7 +155,8 @@ def test_헤드룸은_사료기여를_뺀_값이다(skin_case):
     small = headroom(p, 50)
     large = headroom(p, 300)
 
-    assert large[Nutrient.ZINC] < small[Nutrient.ZINC], (
+    # 체중 기준 상한(EPA+DHA): 사료를 많이 먹으면 영양제 여유분이 줄어야 한다
+    assert large[Nutrient.EPA_DHA] < small[Nutrient.EPA_DHA], (
         "사료를 많이 먹으면 영양제 여유분이 줄어야 한다"
     )
 
@@ -163,9 +164,31 @@ def test_헤드룸은_사료기여를_뺀_값이다(skin_case):
 def test_상한이_안전계수만큼_보수적이다(skin_case):
     p = skin_case.profile
     room = headroom(p, 0)          # 사료 0g 가정
-    raw = UPPER_LIMIT_PER_KG[Nutrient.ZINC] * p.weight_kg
+    raw = UPPER_LIMIT_PER_KG[Nutrient.EPA_DHA] * p.weight_kg
 
-    assert room[Nutrient.ZINC] == pytest.approx(raw * SAFETY_MARGIN)
+    assert room[Nutrient.EPA_DHA] == pytest.approx(raw * SAFETY_MARGIN)
+
+
+def test_아연은_EU_법정최대치를_사료_합계로_건다(skin_case):
+    """
+    한국 영양표준(2024)은 성견 아연에 최대치가 없다 → EU 2016/1095 를 쓴다.
+    완전사료 1kg 당 200mg, 사료+첨가 **합계**. 그래서 여유분은
+        (200 − 사료의 아연 농도) × 먹는 양
+    이 되고, 사료 자체가 이미 200 이상이면 아연은 한 알도 더 못 넣는다.
+    """
+    from core.constants import FOOD_BY_ID, TREAT_RESERVE_RATIO, UPPER_LIMIT_PER_KG_FEED
+
+    p = skin_case.profile
+    grams = 200
+    food_zn_per_kg = FOOD_BY_ID[p.food_id].nutrients_per_g[Nutrient.ZINC] * 1000
+    eaten_kg = grams * (1 + TREAT_RESERVE_RATIO) / 1000
+
+    room = headroom(p, grams)[Nutrient.ZINC]
+    expected = (UPPER_LIMIT_PER_KG_FEED[Nutrient.ZINC] - food_zn_per_kg) * eaten_kg
+    assert room == pytest.approx(max(0.0, expected))
+
+    # 사료+간식+영양제 합계가 법정 최대치를 넘지 않는다
+    assert food_zn_per_kg * eaten_kg + room <= 200 * eaten_kg + 1e-6
 
 
 def test_상한초과시_알갱이를_줄인다():

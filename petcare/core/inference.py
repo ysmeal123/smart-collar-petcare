@@ -188,7 +188,7 @@ def evaluate_axes(
         note = ""
         if suppressed:
             names = "/".join(a.value for a in blockers)
-            note = f" (원인은 {names} — 그쪽을 먼저 치료합니다)"
+            note = f" (원인은 {names} — 그쪽부터 먼저 살펴봅니다)"
         elif active and axis in ALERT_ONLY_AXES:
             note = " (병원에서 확인해 주세요 — 영양제로 다룰 문제가 아닙니다)"
         elif active and axis in BLOCKING_AXES:
