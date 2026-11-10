@@ -58,6 +58,8 @@
 #include <Preferences.h>
 #include <time.h>
 #include <NimBLEDevice.h>   // 목줄(XIAO) 수신. 라이브러리 NimBLE-Arduino 2.x
+#include <Wire.h>
+#include "hx711_i2c.h"        // 밥그릇 저울 (DFRobot KIT0176, I2C 0x64, SDA 21 / SCL 22)
 // BLE 를 넣으면 기본 파티션(1.3MB)을 넘는다.
 // Tools → Partition Scheme → "Huge APP (3MB No OTA/1MB SPIFFS)" 로 올린다.
 
@@ -245,6 +247,7 @@ volatile unsigned long peakAt = 0;
 
 
 volatile uint16_t minVals[4] = {0, 0, 0, 0};
+
 volatile unsigned long minAt = 0;
 volatile bool minFresh = false;
 
@@ -282,6 +285,37 @@ int nShakes = 0;
 //: 1분 요약의 shake_n 은 1분이 지나야 바뀌어서, 흔들어 보여줄 때 숫자가
 //: 바로 안 오른다. 1초 판정이 털기로 바뀔 때마다 하나씩 올린다 (onNow).
 volatile uint32_t shakeLive = 0;
+
+//: **화면용 최근 60초.** 1초 판정(now)을 밥통이 직접 쌓아 센다.
+//:
+//: 1분 요약(min)은 목줄이 구독을 확인한 뒤에만 보내서, 그게 막히면 앱의
+//: '걷기 N초' 가 0 에서 멈췄다 (2026-11-10). 1초 판정은 항상 오므로
+//: 화면 숫자는 이쪽으로 센다. 서버 기록은 그대로 min 이 맡는다.
+const int LIVE_N = 60;
+volatile uint8_t  liveCls[LIVE_N];
+volatile uint32_t liveAt[LIVE_N];
+volatile int liveHead = 0;
+
+static void livePush(uint8_t cls) {
+  liveCls[liveHead] = cls;
+  liveAt[liveHead] = millis();
+  liveHead = (liveHead + 1) % LIVE_N;
+}
+
+/** 최근 60초의 [쉬기초, 걷기초, 뛰기초, 털기회]. */
+static void liveMinute(uint16_t out[4]) {
+  out[0] = out[1] = out[2] = out[3] = 0;
+  uint32_t now = millis();
+  int prev = -1;
+  for (int k = 0; k < LIVE_N; k++) {
+    int i = (liveHead + k) % LIVE_N;            // 오래된 것부터
+    if (liveAt[i] == 0 || now - liveAt[i] > 60000) { prev = -1; continue; }
+    uint8_t c = liveCls[i];
+    if (c < 3) out[c]++;
+    else if (prev != 3) out[3]++;               // 털기는 시작할 때 1회
+    prev = c;
+  }
+}
 
 /**
  * 뒤에 붙인다. **꽉 차면 받지 않는다** (버리지 않는다).
@@ -420,6 +454,7 @@ static void onNow(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) 
   // 털기 이벤트(shk) 는 목줄이 구독을 확인한 뒤에야 보내서, 그게 막히면
   // 화면 숫자도 같이 멈췄다. 1초 판정은 항상 오므로 이쪽이 확실하다.
   if (data[0] == 3 && nowCls != 3) shakeLive++;
+  livePush(data[0]);
   nowCls = data[0];
   nowConf = data[1];
   nowAt = millis();
@@ -648,6 +683,47 @@ static void turnSteps(int s, int steps) {
   }
 }
 
+// 저울은 아래(statusJson 앞)에 있다. 사료를 g 으로 멈추려고 여기서 쓴다.
+extern DFRobot_HX711_I2C scale;
+extern bool  scaleOk;
+extern float weightG;
+//: 로드셀 방향. 2026-11-10 실물은 올리면 음수가 나왔다 (아이폰 177g → -178g).
+//: 선(S+/S-)을 바꾸거나 로드셀을 뒤집어 달면 1.0f 로 고친다.
+const float SCALE_SIGN = -1.0f;
+static float readG(uint8_t times) { return SCALE_SIGN * scale.readWeight(times); }
+
+float lastFoodG = -1;        // 마지막 배출에서 저울로 잰 사료 g (-1 = 못 잼)
+
+//: 사료를 저울로 멈출 때 한 번에 돌리는 펄스. 작을수록 정확하고 느리다.
+const int FOOD_CHUNK = 40;
+//: 떨어지는 중인 사료 몫. 목표보다 이만큼 먼저 멈춘다.
+const float FOOD_EARLY_G = 2.0f;
+
+/**
+ * 사료를 **저울을 보면서** 목표 g 까지 돌린다.
+ *
+ * 1g = 몇 펄스인지는 사료 알 크기·통에 남은 양에 따라 바뀐다. 추정치로
+ * 돌리면 120g 이 60g 도 200g 도 될 수 있어서, 조금씩 돌리고 재기를
+ * 반복한다. 저울이 이상하면(안 늘어나면) 펄스 상한에서 멈춘다.
+ */
+static float dispenseFoodByWeight(float targetG, int maxSteps) {
+  float w0 = readG(8);
+  int done = 0;
+  float got = 0;
+  while (!stopReq && done < maxSteps) {
+    int n = min(FOOD_CHUNK, maxSteps - done);
+    turnSteps(FOOD_SLOT, n);
+    done += n;
+    server.handleClient();
+    got = readG(4) - w0;
+    if (got >= targetG - FOOD_EARLY_G) break;
+  }
+  delay(400);                                   // 다 떨어질 때까지
+  got = readG(8) - w0;
+  Serial.printf("[사료] 목표 %.0fg → 실제 %.1fg (%d 펄스)\n", targetG, got, done);
+  return got;
+}
+
 /** 쌓인 작업을 실행한다. 단위 사이마다 HTTP 를 받아 /status·/stop 에 답한다. */
 static void runJob() {
   busy = true;
@@ -677,8 +753,18 @@ static void runJob() {
     // 알은 하나씩 떨어져야 해서 사이에 틈을 두지만, 사료는 연속으로
     // 흘려보내는 게 맞다. 중간에 멈추면 스크류에 물려 뭉친다.
     if (!stopReq && foodSteps > 0) {
-      Serial.printf("[배출] %s %d 펄스\n", SLOTS[FOOD_SLOT].name, foodSteps);
-      turnSteps(FOOD_SLOT, foodSteps);
+      float target = foodSteps / FOOD_STEPS_PER_G;
+      if (scaleOk) {
+        // 펄스 상한은 추정치의 3배. 1g 당 펄스가 추정보다 커도 목표까지 가되,
+        // 저울이 안 늘어나는 고장이면 거기서 멈춘다.
+        int cap = min(FOOD_STEPS_MAX, foodSteps * 3);
+        lastFoodG = dispenseFoodByWeight(target, cap);
+      } else {
+        Serial.printf("[배출] %s %d 펄스 (저울 없음 — 추정치로)\n",
+                      SLOTS[FOOD_SLOT].name, foodSteps);
+        turnSteps(FOOD_SLOT, foodSteps);
+        lastFoodG = -1;
+      }
       foodSteps = 0;
     }
   }
@@ -701,6 +787,55 @@ static void sendJson(int code, const String& body) {
 
 static void sendError(int code, const String& msg) {
   sendJson(code, "{\"ok\":false,\"error\":\"" + msg + "\"}");
+}
+
+// ---------------------------------------------------------------------------
+// 저울 (밥그릇 무게) — DFRobot KIT0176, I2C. SDA=GPIO21, SCL=GPIO22, 3.3V
+// ---------------------------------------------------------------------------
+DFRobot_HX711_I2C scale;
+bool  scaleOk = false;
+float weightG = 0;
+
+//: 1초마다 읽는다. 한 번 읽는 데 4표본 ≈ 0.1초가 걸려서 더 자주 읽으면
+//: HTTP 응답이 굼떠진다. 배출 중에는 runJob 이 따로 읽는다.
+static void serviceScale() {
+  static unsigned long last = 0;
+  if (!scaleOk || millis() - last < 1000) return;
+  last = millis();
+  float w = readG(4);
+  static float printed = -1000;
+  if (fabs(w - printed) >= 1.0f) {
+    printed = w;
+    Serial.printf("[저울] %.1f g\n", w);
+  }
+  weightG = w;
+}
+
+float scaleCal = 2236.0f;    // 라이브러리 기본값. /scale_cal 로 고친다
+
+/** POST /scale_cal?g=177 — 지금 올린 물건이 몇 g 인지 알려주면 맞춘다. */
+static void handleScaleCal() {
+  if (!scaleOk) { sendError(503, "scale not found"); return; }
+  float g = server.hasArg("g") ? server.arg("g").toFloat() : 0;
+  if (g < 20 || g > 1000) { sendError(400, "g must be 20-1000"); return; }
+  float w = readG(16);
+  if (w < 5) { sendError(400, "put the object on the scale first"); return; }
+  scaleCal = scaleCal * w / g;
+  scale.setCalibration(scaleCal);
+  Preferences nvs;
+  nvs.begin("pebble", false);
+  nvs.putFloat("scaleCal", scaleCal);
+  nvs.end();
+  weightG = readG(8);
+  Serial.printf("[저울] 보정: %.1fg 로 읽히던 것을 %.0fg 로 (계수 %.1f)\n", w, g, scaleCal);
+  sendJson(200, "{\"ok\":true,\"weight_g\":" + String(weightG, 1) + "}");
+}
+
+static void handleTare() {
+  if (!scaleOk) { sendError(503, "scale not found"); return; }
+  scale.peel();
+  weightG = 0;
+  sendJson(200, "{\"ok\":true}");
 }
 
 static String statusJson() {
@@ -726,14 +861,19 @@ static String statusJson() {
 
   // 목줄. age 는 마지막으로 받은 뒤 지난 초 (-1 = 아직 못 받음)
   unsigned long now = millis();
+  j += ",\"scale\":" + String(scaleOk ? "true" : "false");
+  j += ",\"weight_g\":" + String(weightG, 1);
+  j += ",\"last_food_g\":" + String(lastFoodG, 1);
   j += ",\"paired\":\"" + pairedAddr + "\"";
   j += ",\"collar\":{\"connected\":";
   j += collarConnected ? "true" : "false";
   j += ",\"cls\":" + String(nowCls);
   j += ",\"conf\":" + String(nowConf);
   j += ",\"age\":" + String(nowAt ? (long)((now - nowAt) / 1000) : -1L);
-  j += ",\"min\":[" + String(minVals[0]) + "," + String(minVals[1]) + "," +
-       String(minVals[2]) + "," + String(minVals[3]) + "]";
+  uint16_t lm[4];
+  liveMinute(lm);
+  j += ",\"min\":[" + String(lm[0]) + "," + String(lm[1]) + "," +
+       String(lm[2]) + "," + String(lm[3]) + "]";
   j += ",\"min_age\":" + String(minAt ? (long)((now - minAt) / 1000) : -1L);
   j += ",\"shakes\":" + String(shakeLive);
   j += "}}";
@@ -1222,11 +1362,14 @@ static void reportState() {
   j += (cls >= 0 && cls <= 3) ? ids[cls] : "";
   j += "\",\"collar_conf\":" + String(conf / 100.0f, 2);
   j += ",\"collar_age_s\":" + String(at ? (millis() - at) / 1000 : 0);
-  j += ",\"minute\":{\"rest_s\":" + String(minVals[0]);
-  j += ",\"walk_s\":" + String(minVals[1]);
-  j += ",\"run_s\":" + String(minVals[2]);
-  j += ",\"shake_n\":" + String(minVals[3]) + "}";
-  j += ",\"shake_live\":" + String(shakeLive) + "}";
+  uint16_t lm[4];
+  liveMinute(lm);
+  j += ",\"minute\":{\"rest_s\":" + String(lm[0]);
+  j += ",\"walk_s\":" + String(lm[1]);
+  j += ",\"run_s\":" + String(lm[2]);
+  j += ",\"shake_n\":" + String(lm[3]) + "}";
+  j += ",\"shake_live\":" + String(shakeLive);
+  j += ",\"weight_g\":" + String(scaleOk ? weightG : -1.0f, 1) + "}";
 
   String out;
   int code = httpCall("POST", String("/v1/feeder/") + DOG_ID + "/state", j, out);
@@ -1448,7 +1591,8 @@ static void serverCycle() {
   // 또 받아서 두 번 나간다.
   if (jobCmdId.length()) {
     ackCommand(jobCmdId, lastStopped ? "failed" : "done",
-               lastStopped ? "stopped" : "");
+               lastStopped ? String("stopped")
+               : (lastFoodG >= 0 ? "food_g=" + String(lastFoodG, 1) : String("")));
     jobCmdId = "";
   }
 
@@ -1525,9 +1669,24 @@ void setup() {
   server.on("/stop", HTTP_POST, handleStop);
   server.on("/entest", HTTP_GET, handleEnTest);
   server.on("/unpair", HTTP_POST, handleUnpair);
+  server.on("/tare", HTTP_POST, handleTare);
+  server.on("/scale_cal", HTTP_POST, handleScaleCal);
   server.onNotFound([]() { sendError(404, "not found"); });
   server.begin();
   Serial.println("[HTTP] 80번 포트 대기");
+
+  // 저울. 없어도 밥통은 돈다 (무게 피드백만 빠진다).
+  Wire.begin(21, 22);
+  for (int i = 0; i < 3 && !scaleOk; i++) { scaleOk = scale.begin(); if (!scaleOk) delay(300); }
+  if (scaleOk) {
+    Preferences nvs;
+    nvs.begin("pebble", true);
+    scaleCal = nvs.getFloat("scaleCal", scaleCal);
+    nvs.end();
+    scale.setCalibration(scaleCal);
+  }
+  Serial.println(scaleOk ? "[저울] 연결됨 (0x64) — 켤 때 0g 으로 맞춤"
+                         : "[저울] 못 찾음 — SDA 21 / SCL 22 / 3.3V 배선을 확인하세요");
 
   loadPair();
   NimBLEDevice::init("pebble-feeder");
@@ -1538,6 +1697,7 @@ void loop() {
   server.handleClient();
   keepWifi();
   serviceCollar();
+  serviceScale();
   if (enTestReq && !busy) runEnTest();
   if (hasJob && !busy) runJob();
   serverCycle();
