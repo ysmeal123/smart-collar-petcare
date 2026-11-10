@@ -332,6 +332,68 @@ def save_context(dog_id: str, body: AnswersIn) -> dict:
         }
 
 
+class ProfileIn(BaseModel):
+    """
+    앱 온보딩에서 보호자가 고른 값. **보낸 것만 바꾼다.**
+
+    행동 기록(목줄)은 그대로 두고 개의 정보만 바꾼다. 시연에서는 기록이
+    가상 44일치 한 벌이고, 이름·견종·체중은 보는 사람이 앱에서 고른다.
+    """
+
+    name: str | None = Field(default=None, max_length=40)
+    age_months: int | None = None
+    sex: str | None = None
+    neutered: bool | None = None
+    weight_kg: float | None = None
+    body_condition: str | None = None
+    size: str | None = None
+    meals_per_day: int | None = None
+    breeds: list[str] | None = None
+    allergies: list[str] | None = None
+    surgeries: list[dict] | None = None
+    conditions: list[str] | None = None
+    medications: list[str] | None = None
+
+
+@router.post("/dogs/{dog_id}/profile", dependencies=[Depends(require_app)])
+def save_profile(dog_id: str, body: ProfileIn) -> dict:
+    """
+    개 정보를 바꾸고 급여 계획을 다시 만든다.
+
+    **바뀐 게 없으면 다시 계산하지 않는다.** 앱은 화면을 열 때마다 보낸다.
+    같은 날 계획을 여러 번 새로 쌓으면 '전날 대비 ±10%' 제한이 계산마다
+    한 번씩 걸려, 아무것도 안 바꿨는데 숫자가 조금씩 움직인다.
+    """
+    from pydantic import ValidationError
+
+    from core.models import DogProfile
+
+    with db.connect() as c:
+        raw = db.get_dog(c, dog_id)
+        if raw is None:
+            raise HTTPException(404, "등록되지 않은 개체입니다")
+
+        before = DogProfile.model_validate(raw)
+        merged = {**raw, **body.model_dump(exclude_none=True)}
+        merged["dog_id"] = dog_id
+        try:
+            after = DogProfile.model_validate(merged)
+        except ValidationError as e:
+            raise HTTPException(422, f"입력값을 확인하세요: {e.errors()[0]['msg']}")
+
+        if after == before:
+            return {"changed": False}
+
+        db.upsert_dog(c, dog_id, after.model_dump_json())
+        plan = pipeline.recompute(c, dog_id, reset_food=True)
+        c.commit()
+        return {
+            "changed": True,
+            "name": after.name,
+            "total_food_g": plan.get("total_food_g") if plan else None,
+        }
+
+
 class NoteIn(BaseModel):
     text: str
 

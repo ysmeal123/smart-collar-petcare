@@ -52,6 +52,9 @@ class Repository(private val context: Context) {
         val id = dogId?.takeIf { it.isNotBlank() }
 
         if (server != null && id != null) {
+            // 앱에서 고른 개 정보를 먼저 올린다. 서버는 바뀐 게 있을 때만
+            // 다시 계산한다. 실패해도(옛 서버 등) 대시보드는 그대로 읽는다.
+            if (dog != null) runCatching { Net.putProfile(server, id, dog, token) }
             runCatching { Net.dashboard(server, id, token) }
                 .onSuccess { board ->
                     return Loaded(
