@@ -191,6 +191,7 @@ private fun Content(
     var liveWalkS by remember { mutableIntStateOf(0) }
     var liveRunS by remember { mutableIntStateOf(0) }
     var live by remember { mutableStateOf<Feeder.Status?>(null) }
+    var liveFails by remember { mutableIntStateOf(0) }
     var leftNotified by remember { mutableStateOf(false) }
     LaunchedEffect(showFeeder, feederStore.route, feederStore.base) {
         if (showFeeder) return@LaunchedEffect          // 밥통 화면이 따로 읽는다
@@ -205,7 +206,8 @@ private fun Content(
             val now = System.currentTimeMillis()
             val dt = ((now - last) / 1000).toInt().coerceIn(0, 5)   // 끊겼다 붙으면 크게 더하지 않는다
             last = now
-            if (st != null) live = st
+            if (st != null) { live = st; liveFails = 0 } else liveFails++
+            if (liveFails >= 3) live = null            // 6초 넘게 못 읽으면 끊긴 것으로 보여준다
             val c = st?.collar
             if (c != null && c.fresh) when (c.cls) {
                 1 -> liveWalkS += dt
@@ -269,7 +271,7 @@ private fun Content(
                     StatDivider()
                     Stat(minSec(today.summary.walkMin * 60 + liveWalkS), "걷기")
                 }
-                LiveLine(live)
+                LiveLine(live, offline = liveFails >= 3)
             }
 
             Spacer(Modifier.height(T.xl))
@@ -424,7 +426,12 @@ private fun minSec(sec: Int): String =
 
 /** 목줄 지금 상태 한 줄. 밥통이 없으면 아무것도 안 보인다. */
 @Composable
-private fun LiveLine(st: Feeder.Status?) {
+private fun LiveLine(st: Feeder.Status?, offline: Boolean) {
+    if (offline) {
+        Spacer(Modifier.height(T.xs))
+        Text("밥통 연결 안 됨 · 숫자는 저장된 기록 기준", style = T.finePrint)
+        return
+    }
     val c = st?.collar ?: return
     Spacer(Modifier.height(T.xs))
     val now = if (c.fresh) "지금 ${c.behavior}" else if (c.connected) "목줄 연결됨" else "목줄 찾는 중"
