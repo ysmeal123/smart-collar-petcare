@@ -181,6 +181,16 @@ def _weight(profile: DogProfile, days: list[DailySummary]) -> WeightState:
     recent = [kg for _, kg in measured[-5:]]
     current = float(sorted(recent)[len(recent) // 2])
 
+    # 저울과 보호자 입력이 30% 넘게 다르면 저울 기록이 이 개 것이 아니다
+    # (다른 개가 올라섰거나, 시연처럼 기록 한 벌에 다른 개 정보를 넣은 경우).
+    # 그대로 쓰면 '목표 11.6kg 에서 멀어진다 (5.3 → 5.3)' 같은 엉뚱한 전망이 나온다.
+    if profile.weight_kg and abs(current - profile.weight_kg) / profile.weight_kg > 0.3:
+        return WeightState(
+            current_kg=round(profile.weight_kg, 2),
+            target_kg=profile.target_weight_kg,
+            measurements_30d=0,
+        )
+
     trend = None
     if len(measured) >= 8:
         first = float(sorted([kg for _, kg in measured[:5]])[2])

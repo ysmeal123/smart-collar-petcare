@@ -47,7 +47,7 @@ import com.petcare.data.TraceStep
  * 색맹 사용자에게도 대비가 그대로 남는다는 실용적 이점도 있다.
  */
 @Composable
-fun InsightCard(rx: Prescription) {
+fun InsightCard(rx: Prescription, added: List<String> = emptyList()) {
     when {
         rx.escalated -> Column(
             modifier = Modifier.fillMaxWidth().utilityCard(
@@ -94,6 +94,14 @@ fun InsightCard(rx: Prescription) {
                 Text(a.message, style = T.displayMd)
                 Spacer(Modifier.height(T.xs))
                 Text("${a.label} 지표", style = T.caption.copy(color = T.inkMuted48))
+            }
+            // 관찰 → 처방을 한 화면에서 잇는다. "그래서 무엇을 했나" 가 빠지면 경고로만 읽힌다.
+            if (added.isNotEmpty()) {
+                Spacer(Modifier.height(T.md))
+                Text(
+                    "→ 오늘 계획에 ${added.joinToString("·")}을 넣었어요",
+                    style = T.bodyStrong.copy(color = T.primary),
+                )
             }
         }
     }

@@ -88,3 +88,13 @@ def test_잘못된_값은_저장하지_않는다(seeded):
     assert e.value.status_code == 422
     with db.connect(seeded) as c:
         assert db.get_dog(c, DOG)["weight_kg"] > 0
+
+
+def test_체중을_크게_바꾸면_전망이_입력한_체중을_쓴다(seeded):
+    """저울 기록(가상 44일)과 입력 체중이 크게 다르면 입력을 믿는다."""
+    with db.connect(seeded) as c:
+        w0 = db.get_dog(c, DOG)["weight_kg"]
+    ingest.save_profile(DOG, ingest.ProfileIn(weight_kg=w0 * 2))
+    sim = plan_of(seeded)["simulation"]
+    assert abs(sim["projected_kg"] - w0 * 2) / (w0 * 2) < 0.1
+    assert sim["weight"] != "AWAY"

@@ -36,7 +36,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.petcare.data.AxisScore
 import com.petcare.data.Dashboard
+import com.petcare.data.Feeder
 import com.petcare.data.FeederStore
+import com.petcare.data.Notify
+import android.Manifest
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import com.petcare.data.Loaded
 import com.petcare.data.Origin
 import com.petcare.data.MyDog
@@ -44,6 +50,8 @@ import com.petcare.data.Prescription
 import com.petcare.data.Repository
 import kotlin.math.abs
 import kotlin.math.roundToInt
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
@@ -70,6 +78,15 @@ fun DashboardScreen(
     // 이므로, Content 안에 두면 답을 할 때마다 창이 닫힌다.
     var showChat by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+
+    // 남은 사료 알림이 메인 화면에서 울리므로 권한도 여기서 한 번 묻는다 (Android 13+).
+    val ctx = LocalContext.current
+    val askNotify = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= 33 && !Notify.allowed(ctx)) {
+            askNotify.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
 
     LaunchedEffect(scenario, dog, reload) {
         loaded = null
@@ -168,11 +185,49 @@ private fun Content(
     val context = LocalContext.current
     val feederStore = remember { FeederStore(context.applicationContext) }
 
+    // --- 실시간: 목줄이 지금 하는 행동을 오늘 숫자에 더한다 ---------------------
+    // 밥통 화면을 안 열어도 걸음·걷기·뛰기가 오르고, 남은 사료 알림도 여기서 울린다.
+    // shortcut: 앱이 켜져 있는 동안 본 것만 더한다. 목줄 기록이 서버에 쌓이기 시작하면 서버 값으로 바꾼다.
+    var liveWalkS by remember { mutableIntStateOf(0) }
+    var liveRunS by remember { mutableIntStateOf(0) }
+    var live by remember { mutableStateOf<Feeder.Status?>(null) }
+    var liveFails by remember { mutableIntStateOf(0) }
+    var leftNotified by remember { mutableStateOf(false) }
+    LaunchedEffect(showFeeder, feederStore.route, feederStore.base) {
+        if (showFeeder) return@LaunchedEffect          // 밥통 화면이 따로 읽는다
+        val link = Feeder.Link(
+            route = feederStore.route, direct = feederStore.base,
+            serverBase = dog.serverBase, serverDogId = dog.serverDogId,
+            serverToken = dog.serverToken,
+        )
+        var last = System.currentTimeMillis()
+        while (isActive) {
+            val st = runCatching { Feeder.status(link) }.getOrNull()
+            val now = System.currentTimeMillis()
+            val dt = ((now - last) / 1000).toInt().coerceIn(0, 5)   // 끊겼다 붙으면 크게 더하지 않는다
+            last = now
+            if (st != null) { live = st; liveFails = 0 } else liveFails++
+            if (liveFails >= 3) live = null            // 6초 넘게 못 읽으면 끊긴 것으로 보여준다
+            val c = st?.collar
+            if (c != null && c.fresh) when (c.cls) {
+                1 -> liveWalkS += dt
+                2 -> liveRunS += dt
+            }
+            if (st?.leftoverAlert == true && !leftNotified) {
+                Notify.leftover(context, dog.name.ifBlank { "우리 아이" }, st.weightG, st.leftoverMin.toInt())
+                leftNotified = true
+            } else if (st?.leftoverAlert != true) {
+                leftNotified = false
+            }
+            delay(2_000)
+        }
+    }
+
     // 활동 목표는 baseline(평소 수준)으로 잡는다.
     // 5kg 말티즈와 28kg 대형견에게 같은 걸음 수 목표를 들이대는 건 의미가 없다.
     val actTrend = data.trend["activity_sec"]
     val progress = if (actTrend != null && actTrend.baseline > 0) {
-        (today.activeSec / actTrend.baseline).toFloat()
+        ((today.activeSec + liveWalkS + liveRunS) / actTrend.baseline).toFloat()
     } else {
         0f
     }
@@ -203,27 +258,34 @@ private fun Content(
                 ActivityRing(
                     progress = progress,
                     centerValue = "${(progress * 100).roundToInt()}%",
-                    centerLabel = "평소 대비",
+                    centerLabel = "평소 활동량",
                     color = if (rx.escalated) T.critical else T.primary,
                 )
                 Spacer(Modifier.height(T.md))
+                // 걸음은 목줄이 세지 않아 시간으로 어림한다 (개 보행 약 2보/초, 뜀 약 3보/초).
+                val steps = today.summary.steps + liveWalkS * 2 + liveRunS * 3
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Stat("${today.summary.steps}", "걸음")
+                    Stat("$steps", "걸음")
                     StatDivider()
-                    Stat("${today.summary.runMin}분", "뛰기")
+                    Stat(minSec(today.summary.runMin * 60 + liveRunS), "뛰기")
                     StatDivider()
-                    Stat("${today.summary.walkMin}분", "걷기")
+                    Stat(minSec(today.summary.walkMin * 60 + liveWalkS), "걷기")
                 }
+                LiveLine(live, offline = liveFails >= 3)
             }
 
             Spacer(Modifier.height(T.xl))
-            InsightCard(rx)
+            InsightCard(
+                rx,
+                added = data.plan?.meals.orEmpty()
+                    .flatMap { m -> m.pellets.map { it.name } }.distinct(),
+            )
 
             // 최종 출력. 계획이 있으면 그걸 쓰고, 없으면 기존 처방 카드로 내려간다.
             val plan = data.plan
             Spacer(Modifier.height(T.sm))
             if (plan != null) {
-                PlanCard(plan) { showTrace = true }
+                PlanCard(plan, onFeed = { showFeeder = true }) { showTrace = true }
             } else {
                 FeedingCard(rx, dog.mealsPerDay) { showTrace = true }
             }
@@ -355,6 +417,41 @@ private fun Header(dog: MyDog, onFeeder: () -> Unit, onSettings: () -> Unit) {
         UtilityButton(label = "밥통", onClick = onFeeder)
         Spacer(Modifier.width(T.xs))
         UtilityButton(label = "설정", onClick = onSettings)
+    }
+}
+
+/** 1분이 안 돼도 숫자가 움직이게 초까지 보여준다. */
+private fun minSec(sec: Int): String =
+    if (sec % 60 == 0) "${sec / 60}분" else "${sec / 60}분 ${sec % 60}초"
+
+/** 목줄 지금 상태 한 줄. 밥통이 없으면 아무것도 안 보인다. */
+@Composable
+private fun LiveLine(st: Feeder.Status?, offline: Boolean) {
+    if (offline) {
+        Spacer(Modifier.height(T.xs))
+        Text("밥통 연결 안 됨 · 숫자는 저장된 기록 기준", style = T.finePrint)
+        return
+    }
+    val c = st?.collar ?: return
+    Spacer(Modifier.height(T.xs))
+    val now = if (c.fresh) "지금 ${c.behavior}" else if (c.connected) "목줄 연결됨" else "목줄 찾는 중"
+    val shakes = if (c.shakes >= 0) " · 털기 ${c.shakes}회" else ""
+    val bowl = if (st.hasScale) " · 밥그릇 ${if (st.weightG < 0.5) 0 else st.weightG.roundToInt()}g" else ""
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            Modifier.size(6.dp).background(
+                if (c.fresh) T.primary else T.inkMuted48, CircleShape,
+            ),
+        )
+        Spacer(Modifier.width(T.xxs))
+        Text(now + shakes + bowl, style = T.finePrint)
+    }
+    if (st.leftoverAlert) {
+        Spacer(Modifier.height(T.xxs))
+        Text(
+            "밥이 ${st.leftoverMin.toInt()}분째 남아 있어요",
+            style = T.finePrint.copy(color = T.critical),
+        )
     }
 }
 
