@@ -119,7 +119,7 @@ private fun MealRow(meal: Meal) {
                 Spacer(Modifier.width(T.xs))
                 Text(p.name, style = T.caption.copy(color = T.ink))
                 Spacer(Modifier.weight(1f))
-                Text("${p.count}알", style = T.captionStrong)
+                Text(p.amount, style = T.captionStrong)
             }
         }
     }

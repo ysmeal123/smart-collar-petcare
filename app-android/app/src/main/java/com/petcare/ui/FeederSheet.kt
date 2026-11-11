@@ -187,9 +187,12 @@ fun FeederSheet(
                 Column(modifier = Modifier.fillMaxWidth().utilityCard(padding = T.md)) {
                     Text("오늘 급여 계획", style = T.captionStrong)
                     Spacer(Modifier.height(T.xxs))
-                    val names = plan.meals.flatMap { it.pellets }.associate { it.slot to it.name }
+                    val bySlot = plan.meals.flatMap { it.pellets }.groupBy { it.slot }
                     val parts = dayPellets.toSortedMap().map { (slot, n) ->
-                        "${names[slot] ?: "${slot}번"} ${n}알"
+                        val ps = bySlot[slot].orEmpty()
+                        val mg = ps.sumOf { it.doseMg }
+                        val amt = if (mg > 0) ps.first().copy(doseMg = mg).amount else "${n}알"
+                        "${ps.firstOrNull()?.name ?: "${slot}번"} $amt"
                     } + listOfNotNull(if (dayFood > 0) "사료 ${dayFood}g" else null)
                     Text(parts.joinToString(" · "), style = T.caption)
                     Spacer(Modifier.height(T.sm))

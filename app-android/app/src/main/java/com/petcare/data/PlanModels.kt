@@ -19,7 +19,16 @@ data class Pellet(
     val count: Int,
     val color: String,
     val reason: String = "",
-)
+    @SerialName("dose_mg") val doseMg: Double = 0.0,
+) {
+    /** '640mg' 처럼. 1000mg 넘으면 g. 서버가 안 주면(옛 계획) 알 수로. */
+    val amount: String
+        get() = when {
+            doseMg >= 1000 -> String.format(java.util.Locale.US, "%.1fg", doseMg / 1000)
+            doseMg > 0 -> "${doseMg.toInt()}mg"
+            else -> "${count}알"
+        }
+}
 
 @Serializable
 data class Meal(

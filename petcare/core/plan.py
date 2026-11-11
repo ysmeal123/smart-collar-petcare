@@ -47,6 +47,8 @@ class Pellet(BaseModel):
     count: int
     color: str
     reason: str = ""
+    #: 유효성분 합계(mg). 앱이 '8알' 대신 '640mg' 으로 보여준다. 균수(cfu)는 무게가 아니라 뺀다.
+    dose_mg: float = 0.0
 
 
 class Meal(BaseModel):
@@ -189,6 +191,9 @@ def split(rx: Prescription, profile: DogProfile, day: date) -> list[Meal]:
                     cartridge_id=it.cartridge_id,
                     name=it.name, count=it.pellets,
                     color=it.color, reason=it.reason,
+                    dose_mg=round(it.pellets * sum(
+                        v for k, v in CARTRIDGE_BY_ID[it.cartridge_id].nutrients_per_pellet.items()
+                        if k.endswith("_mg")), 1),
                 )
                 for it in picked
             ],
