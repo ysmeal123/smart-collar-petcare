@@ -118,7 +118,7 @@ fun FeederSheet(
     }
 
     // 밥통이 2초마다 보고한다. 앱이 그보다 느리게 읽으면 그만큼 더 늦는다.
-    val pollMs = if (link.viaServer) 1_500L else 1_000L
+    val pollMs = if (link.viaServer) 1_000L else 700L
 
     LaunchedEffect(base, route) {
         status = null

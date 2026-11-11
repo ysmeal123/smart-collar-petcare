@@ -100,7 +100,8 @@ const unsigned long POLL_MS = 60000;
 //:
 //: 명령 조회와 같이 1분으로 뒀더니 시연에서 목줄을 흔들고 한참 기다려야
 //: 했다. 본문이 200바이트도 안 되고 연결도 재사용하므로 부담이 작다.
-const unsigned long STATE_MS = 2000;
+//: 2026-11-11: 2초 → 1초. 흔들고 앱에 뜨기까지가 길다는 시연 피드백.
+const unsigned long STATE_MS = 1000;
 
 //: 목줄 데이터를 올리는 주기. 1분 요약이 오는 대로 보낸다.
 //: 여러 번 몰아서 보내도 서버가 (부팅ID, t_ms) 로 중복을 막는다.
@@ -291,7 +292,9 @@ volatile uint32_t shakeLive = 0;
 //: 1분 요약(min)은 목줄이 구독을 확인한 뒤에만 보내서, 그게 막히면 앱의
 //: '걷기 N초' 가 0 에서 멈췄다 (2026-11-10). 1초 판정은 항상 오므로
 //: 화면 숫자는 이쪽으로 센다. 서버 기록은 그대로 min 이 맡는다.
-const int LIVE_N = 60;
+//: 목줄이 0.5초마다 판정하므로 60초 = 120개. 칸 수로 초를 세지 않고
+//: 앞 판정과의 실제 간격(최대 1.5초)을 더한다 - 목줄 판정 주기가 바뀌어도 맞다.
+const int LIVE_N = 130;
 volatile uint8_t  liveCls[LIVE_N];
 volatile uint32_t liveAt[LIVE_N];
 volatile int liveHead = 0;
@@ -307,14 +310,20 @@ static void liveMinute(uint16_t out[4]) {
   out[0] = out[1] = out[2] = out[3] = 0;
   uint32_t now = millis();
   int prev = -1;
+  uint32_t ms[3] = {0, 0, 0};
+  uint32_t prevAt = 0;
   for (int k = 0; k < LIVE_N; k++) {
     int i = (liveHead + k) % LIVE_N;            // 오래된 것부터
-    if (liveAt[i] == 0 || now - liveAt[i] > 60000) { prev = -1; continue; }
+    if (liveAt[i] == 0 || now - liveAt[i] > 60000) { prev = -1; prevAt = 0; continue; }
     uint8_t c = liveCls[i];
-    if (c < 3) out[c]++;
+    uint32_t dt = prevAt ? liveAt[i] - prevAt : 1000;
+    if (dt > 1500) dt = 1000;                   // 끊겼다 붙은 경우
+    prevAt = liveAt[i];
+    if (c < 3) ms[c] += dt;
     else if (prev != 3) out[3]++;               // 털기는 시작할 때 1회
     prev = c;
   }
+  for (int c = 0; c < 3; c++) out[c] = (uint16_t)min<uint32_t>(60, (ms[c] + 500) / 1000);
 }
 
 /**
