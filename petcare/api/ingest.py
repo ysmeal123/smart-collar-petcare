@@ -618,7 +618,10 @@ LEFTOVER_MIN = float(os.environ.get("PEBBLE_LEFTOVER_MIN", "30"))
 def _leftover(state: dict, now: datetime) -> dict:
     """그릇에 남은 양과 그 상태로 지난 분. 저울이 없으면 grams 가 None."""
     w = state.get("weight_g", -1.0)
-    if w is None or w <= -1.0:
+    has = state.get("scale")
+    if has is None:                      # 옛 펌웨어: -1 이 '없음'
+        has = w is not None and w != -1.0
+    if not has or w is None:
         return {"grams": None, "minutes": 0, "alert": False,
                 "threshold_g": LEFTOVER_G, "after_min": LEFTOVER_MIN}
     since = state.get("leftover_since")
@@ -677,6 +680,8 @@ class FeederStateIn(BaseModel):
     #: 밥그릇 저울의 지금 무게(g). 그릇 무게는 영점으로 뺀 값이다.
     #: -1 = 저울 없음. 영점 근처에서는 -0.3 처럼 살짝 음수가 나올 수 있다.
     weight_g: float = Field(default=-1.0, ge=-2000, le=5000)
+    #: 저울이 붙어 있나. None = 이 필드를 안 보내는 옛 펌웨어 (weight_g 로 추측).
+    scale: bool | None = None
 
 
 @router.post("/dogs/{dog_id}/dispense", dependencies=[Depends(require_app)])
@@ -793,7 +798,7 @@ def put_feeder_state(dog_id: str, body: FeederStateIn) -> dict:
 
         # 남은 사료: 기준 이상이 된 첫 시각을 이어서 들고 간다.
         # 영점을 잡으면 그릇이 0 이 되므로 처음부터 다시 센다.
-        if body.weight_g >= LEFTOVER_G and not tare:
+        if body.scale is not False and body.weight_g >= LEFTOVER_G and not tare:
             state["leftover_since"] = old.get("leftover_since") or now.isoformat(
                 timespec="seconds")
         else:

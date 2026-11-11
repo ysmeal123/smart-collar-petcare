@@ -202,6 +202,8 @@ object Net {
         @SerialName("shake_live") val shakeLive: Int = -1,
         /** 밥그릇 저울 g (-1 = 저울 없음). */
         @SerialName("weight_g") val weightG: Double = -1.0,
+        /** 저울이 붙어 있나. null = 옛 펌웨어. */
+        val scale: Boolean? = null,
     )
 
     @Serializable

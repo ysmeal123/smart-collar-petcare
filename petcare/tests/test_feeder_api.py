@@ -330,3 +330,9 @@ def test_저울이_없으면_무게도_알림도_없다(tmpdb):
     ingest.put_feeder_state(DOG, ingest.FeederStateIn())
     left = ingest.feeder_view(DOG)["leftover"]
     assert left["grams"] is None and not left["alert"]
+
+
+def test_무게가_음수여도_저울은_있다(tmpdb):
+    """영점이 어긋나 -69g 이 나와도 저울이 없는 게 아니다 ([영점] 이 꺼지면 안 된다)."""
+    ingest.put_feeder_state(DOG, ingest.FeederStateIn(weight_g=-69.1, scale=True))
+    assert ingest.feeder_view(DOG)["leftover"]["grams"] == -69.1
