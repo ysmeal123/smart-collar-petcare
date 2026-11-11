@@ -44,7 +44,7 @@ import kotlin.math.roundToInt
  * 서버가 내는 마지막 결과물이고, 밥통이 그대로 받아 사출한다.
  */
 @Composable
-fun PlanCard(plan: FeedingPlan, onWhy: () -> Unit) {
+fun PlanCard(plan: FeedingPlan, onFeed: (() -> Unit)? = null, onWhy: () -> Unit) {
     Column(modifier = Modifier.fillMaxWidth().utilityCard()) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -81,6 +81,10 @@ fun PlanCard(plan: FeedingPlan, onWhy: () -> Unit) {
         }
 
         Spacer(Modifier.height(T.lg))
+        if (onFeed != null) {
+            PrimaryPill(label = "지금 급여하기", modifier = Modifier.fillMaxWidth(), onClick = onFeed)
+            Spacer(Modifier.height(T.xs))
+        }
         GhostPill(
             label = "왜 이렇게 나왔나요?",
             modifier = Modifier.fillMaxWidth(),

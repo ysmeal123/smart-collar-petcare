@@ -205,7 +205,7 @@ private fun Content(
             val now = System.currentTimeMillis()
             val dt = ((now - last) / 1000).toInt().coerceIn(0, 5)   // 끊겼다 붙으면 크게 더하지 않는다
             last = now
-            live = st
+            if (st != null) live = st
             val c = st?.collar
             if (c != null && c.fresh) when (c.cls) {
                 1 -> liveWalkS += dt
@@ -256,7 +256,7 @@ private fun Content(
                 ActivityRing(
                     progress = progress,
                     centerValue = "${(progress * 100).roundToInt()}%",
-                    centerLabel = "평소 대비",
+                    centerLabel = "평소 활동량",
                     color = if (rx.escalated) T.critical else T.primary,
                 )
                 Spacer(Modifier.height(T.md))
@@ -273,13 +273,17 @@ private fun Content(
             }
 
             Spacer(Modifier.height(T.xl))
-            InsightCard(rx)
+            InsightCard(
+                rx,
+                added = data.plan?.meals.orEmpty()
+                    .flatMap { m -> m.pellets.map { it.name } }.distinct(),
+            )
 
             // 최종 출력. 계획이 있으면 그걸 쓰고, 없으면 기존 처방 카드로 내려간다.
             val plan = data.plan
             Spacer(Modifier.height(T.sm))
             if (plan != null) {
-                PlanCard(plan) { showTrace = true }
+                PlanCard(plan, onFeed = { showFeeder = true }) { showTrace = true }
             } else {
                 FeedingCard(rx, dog.mealsPerDay) { showTrace = true }
             }
