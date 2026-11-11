@@ -102,6 +102,8 @@ const unsigned long POLL_MS = 60000;
 //: 했다. 본문이 200바이트도 안 되고 연결도 재사용하므로 부담이 작다.
 //: 2026-11-11: 2초 → 1초. 흔들고 앱에 뜨기까지가 길다는 시연 피드백.
 const unsigned long STATE_MS = 1000;
+//: 앱이 직접 경로로 /status 를 마지막에 읽은 시각. 0 = 아직 없음.
+unsigned long lastDirectAt = 0;
 
 //: 목줄 데이터를 올리는 주기. 1분 요약이 오는 대로 보낸다.
 //: 여러 번 몰아서 보내도 서버가 (부팅ID, t_ms) 로 중복을 막는다.
@@ -696,9 +698,9 @@ static void turnSteps(int s, int steps) {
 extern DFRobot_HX711_I2C scale;
 extern bool  scaleOk;
 extern float weightG;
-//: 로드셀 방향. 2026-11-10 실물은 올리면 음수가 나왔다 (아이폰 177g → -178g).
-//: 선(S+/S-)을 바꾸거나 로드셀을 뒤집어 달면 1.0f 로 고친다.
-const float SCALE_SIGN = -1.0f;
+//: 로드셀 방향. 표준 배선(초록 S+, 흰 S-) + 화살표가 누르는 방향(↓)이면 1.
+//: 올리면 음수가 나오면 로드셀을 뒤집어 달거나, 여기를 -1.0f 로 바꾼다.
+const float SCALE_SIGN = 1.0f;
 static float readG(uint8_t times) { return SCALE_SIGN * scale.readWeight(times); }
 
 float lastFoodG = -1;        // 마지막 배출에서 저울로 잰 사료 g (-1 = 못 잼)
@@ -1614,7 +1616,11 @@ static void serverCycle() {
     jobCmdId = "";
   }
 
-  if (now - lastState >= STATE_MS || lastState == 0) {
+  // **앱이 직접 붙어 있으면 서버 보고를 늦춘다.** 서버 보고(HTTPS)는 한 번에
+  // 1초 가까이 루프를 막는다. 1초마다 하면 그 사이 /status 를 거의 못 받아
+  // 앱이 '연결할 수 없습니다' 를 띄웠다 (2026-11-11, 응답 2~3초).
+  unsigned long stateEvery = (lastDirectAt && now - lastDirectAt < 5000) ? 5000 : STATE_MS;
+  if (now - lastState >= stateEvery || lastState == 0) {
     lastState = now;
     reportState();
   }
@@ -1680,7 +1686,7 @@ void setup() {
   }
 
   server.on("/", HTTP_GET, handleIndex);
-  server.on("/status", HTTP_GET, []() { sendJson(200, statusJson()); });
+  server.on("/status", HTTP_GET, []() { lastDirectAt = millis(); sendJson(200, statusJson()); });
   server.on("/dispense", HTTP_POST, handleDispense);
   server.on("/meal", HTTP_POST, handleMeal);
   server.on("/calibrate", HTTP_POST, handleCalibrate);
