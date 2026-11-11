@@ -150,6 +150,8 @@ object Feeder {
         val collar: Collar? = null,
         /** 밥그릇 저울 g. 그릇 무게는 영점으로 뺐다. -1 = 저울 없음 */
         @kotlinx.serialization.SerialName("weight_g") val weightG: Double = -1.0,
+        /** 저울이 붙어 있나. 무게가 음수여도(영점 어긋남) 저울은 있다. */
+        val scale: Boolean = false,
         // --- 아래는 ESP32 가 보내지 않는다. 서버 경유일 때만 채운다 ---
         val via: String = VIA_DIRECT,
         /** 밥통이 마지막으로 보고한 뒤 지난 초. -1 = 모름 */
@@ -159,7 +161,7 @@ object Feeder {
         /** 그릇에 기준 이상이 남은 채 지난 분. */
         val leftoverMin: Double = 0.0,
     ) {
-        val hasScale: Boolean get() = weightG > -1.0
+        val hasScale: Boolean get() = scale
         val leftoverAlert: Boolean
             get() = hasScale && weightG >= LEFTOVER_G && leftoverMin >= LEFTOVER_MIN
     }
@@ -265,6 +267,7 @@ object Feeder {
                 )
             },
             weightG = s?.weightG ?: -1.0,
+            scale = s?.scale ?: ((s?.weightG ?: -1.0) != -1.0),
             via = VIA_SERVER,
             ageS = age,
             pending = v.pending,

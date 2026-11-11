@@ -1378,6 +1378,9 @@ static void reportState() {
   j += ",\"run_s\":" + String(lm[2]);
   j += ",\"shake_n\":" + String(lm[3]) + "}";
   j += ",\"shake_live\":" + String(shakeLive);
+  // **있음/없음을 따로 보낸다.** 무게로 추측하면(-1 = 없음) 영점이 어긋나
+  // -69g 처럼 나올 때 '저울 없음' 으로 보여 [영점] 이 꺼졌다.
+  j += ",\"scale\":" + String(scaleOk ? "true" : "false");
   j += ",\"weight_g\":" + String(scaleOk ? weightG : -1.0f, 1) + "}";
 
   String out;
