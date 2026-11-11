@@ -33,10 +33,6 @@ import com.petcare.data.FeederStore
 import com.petcare.data.FeedingPlan
 import com.petcare.data.MyDog
 import com.petcare.data.Notify
-import android.Manifest
-import android.os.Build
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -94,17 +90,8 @@ fun FeederSheet(
     }
     val counts = remember { mutableStateListOf(1, 1, 1, 40) }
 
-    // 남은 사료 알림. 처음 열 때 알림 권한을 묻고(Android 13+),
-    // 기준을 넘는 순간 한 번만 울린다. 다 먹으면 다시 울릴 수 있게 풀린다.
+    // 남은 사료 알림. 기준을 넘는 순간 한 번만 울린다 (권한은 메인 화면이 묻는다).
     val ctx = LocalContext.current
-    val askNotify = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission(),
-    ) { }
-    LaunchedEffect(Unit) {
-        if (Build.VERSION.SDK_INT >= 33 && !Notify.allowed(ctx)) {
-            askNotify.launch(Manifest.permission.POST_NOTIFICATIONS)
-        }
-    }
     var notified by remember { mutableStateOf(false) }
     val leftAlert = status?.leftoverAlert == true
     LaunchedEffect(leftAlert) {
@@ -480,7 +467,7 @@ private fun ScaleCard(status: Feeder.Status?, onTare: () -> Unit) {
             Spacer(Modifier.height(T.xs))
             Text(
                 "사료 ${w.toInt()}g이 ${status.leftoverMin.toInt()}분째 남아 있어요. 식욕을 확인해 주세요.",
-                style = T.captionStrong.copy(color = androidx.compose.ui.graphics.Color(0xFFD70015)),
+                style = T.captionStrong.copy(color = T.critical),
             )
         } else if (has && w >= Feeder.LEFTOVER_G && status!!.leftoverMin > 0) {
             Spacer(Modifier.height(T.xs))
