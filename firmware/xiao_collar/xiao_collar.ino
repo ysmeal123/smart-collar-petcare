@@ -6,7 +6,7 @@
  * 모델: activity_cnn5.h (팀원이 학습. 5클래스 REST/WALK/RUN/VIGOROUS/SHAKE)
  *       원본 예제 activity_cnn5_live.ino 의 전처리·정규화를 그대로 옮겼다.
  * 우리 클래스: 0 쉬기 / 1 걷기 / 2 뛰기 / 3 털기
- *       **VIGOROUS(격한 활동)는 쓰지 않는다** — 나머지 넷 중에서 고르고 확률을 다시 나눈다.
+ *       **VIGOROUS(격한 활동)는 쓰지 않는다** — 넷 중에서 고르고, 격한 활동만 높으면 앞 판정을 유지한다.
  *
  * **전처리는 학습 때와 같아야 한다** (MU/SD, 100Hz, 2초 창, 자이로 바이어스).
  * 켤 때 2초 가만히 둔다 (자이로 바이어스 측정, 초록 깜빡임).
@@ -91,7 +91,7 @@ float gbias[3] = {0, 0, 0};
 const float MU[2] = {1.2197f, 81.993f};      // 학습 때 정규화 (modelA5_final/params.json)
 const float SD[2] = {1.1606f, 201.3286f};
 const int N_MODEL = 5;                        // REST WALK RUN VIGOROUS SHAKE
-//: 모델 출력 → 우리 클래스. -1 = 버린다 (VIGOROUS)
+//: 모델 출력 → 우리 클래스. -1 = 버린다 (VIGOROUS, 격한 활동은 쓰지 않는다).
 const int MODEL_TO_OURS[N_MODEL] = {0, 1, 2, -1, 3};
 
 constexpr int kArenaSize = 40 * 1024;
@@ -222,10 +222,17 @@ static bool runModel(float proba[4]) {
   for (int i = 0; i < N_MODEL; i++) {
     int o = MODEL_TO_OURS[i];
     if (o < 0) continue;
-    proba[o] = p5[i];
+    proba[o] += p5[i];
     sum += p5[i];
   }
-  if (sum > 1e-6f) for (int c = 0; c < 4; c++) proba[c] /= sum;
+  // 격한 활동만 높으면 넷이 거의 0 이다. 그대로 나누면 잡음이 판정이 되고,
+  // 다 0 이면 '쉬기 0.00' 으로 떨어진다 (2026-11-11 실측). 그때는 앞 판정을 유지한다.
+  static float last[4] = {1, 0, 0, 0};
+  if (sum < 0.2f) {
+    for (int c = 0; c < 4; c++) proba[c] = last[c];
+    return true;
+  }
+  for (int c = 0; c < 4; c++) last[c] = proba[c] /= sum;
   return true;
 }
 

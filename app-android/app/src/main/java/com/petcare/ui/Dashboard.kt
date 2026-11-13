@@ -270,6 +270,12 @@ private fun Content(
                     Stat(minSec(today.summary.runMin * 60 + liveRunS), "뛰기")
                     StatDivider()
                     Stat(minSec(today.summary.walkMin * 60 + liveWalkS), "걷기")
+                    // 털면 바로 오르는 큰 숫자. 작은 줄에 두면 시연에서 안 보인다.
+                    val shakes = live?.collar?.shakes ?: -1
+                    if (shakes >= 0) {
+                        StatDivider()
+                        Stat("${shakes}회", "털기")
+                    }
                 }
                 LiveLine(live, offline = liveFails >= 3)
             }
@@ -435,7 +441,6 @@ private fun LiveLine(st: Feeder.Status?, offline: Boolean) {
     val c = st?.collar ?: return
     Spacer(Modifier.height(T.xs))
     val now = if (c.fresh) "지금 ${c.behavior}" else if (c.connected) "목줄 연결됨" else "목줄 찾는 중"
-    val shakes = if (c.shakes >= 0) " · 털기 ${c.shakes}회" else ""
     val bowl = if (st.hasScale) " · 밥그릇 ${if (st.weightG < 0.5) 0 else st.weightG.roundToInt()}g" else ""
     Row(verticalAlignment = Alignment.CenterVertically) {
         Box(
@@ -444,7 +449,7 @@ private fun LiveLine(st: Feeder.Status?, offline: Boolean) {
             ),
         )
         Spacer(Modifier.width(T.xxs))
-        Text(now + shakes + bowl, style = T.finePrint)
+        Text(now + bowl, style = T.finePrint)
     }
     if (st.leftoverAlert) {
         Spacer(Modifier.height(T.xxs))
