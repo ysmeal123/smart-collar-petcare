@@ -1,6 +1,8 @@
 package com.petcare.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -147,7 +149,11 @@ fun FeederSheet(
         containerColor = T.canvas,
         contentColor = T.ink,
     ) {
-        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = T.gutter)) {
+        // 슬롯·계획·저울 카드가 늘어 작은 화면(갤럭시)에서 3번 슬롯 아래가 잘렸다. 스크롤로 다 보이게.
+        Column(
+            modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState())
+                .padding(horizontal = T.gutter),
+        ) {
             Text("밥통", style = T.displayMd)
             Spacer(Modifier.height(T.xxs))
             ConnectionLine(connected, busy, status, error, link.viaServer)
