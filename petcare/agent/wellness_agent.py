@@ -81,6 +81,32 @@ class Context(BaseModel):
     def known(self, key: str) -> bool:
         return key in self.answers
 
+    def days_since(self, key: str) -> int | None:
+        """
+        그 일이 며칠 전이었나. **모르면 None.**
+
+        None 과 0 은 다르다 - None 은 보호자가 시점을 말하지 않은 것이고
+        0 은 오늘이다. 모르면 시점을 안 보던 때처럼 처리해야 한다.
+        """
+        v = self.answers.get(key + "_days", "")
+        v = v.strip() if isinstance(v, str) else ""
+        return int(v) if v.isdigit() else None
+
+    def too_old(self, key: str, window_days: int) -> bool:
+        """
+        **그 일이 지금 증상의 설명이 되기엔 너무 오래됐나.**
+
+        모르면 거짓이다. 시점을 안 말했으면 지금까지처럼 '최근' 으로 본다 -
+        모호할 때는 지켜보는 쪽(보류)이 안전하다.
+        """
+        d = self.days_since(key)
+        return d is not None and d > window_days
+
+    def lasted(self, key: str, days: int) -> bool:
+        """그 증상이 이만큼 이어졌나. 모르면 거짓."""
+        d = self.days_since(key)
+        return d is not None and d >= days
+
 
 # ---------------------------------------------------------------------------
 # 질문 목록
@@ -249,6 +275,35 @@ class ContextEffect(BaseModel):
     notes: list[str] = Field(default_factory=list)
 
 
+#: "최근" 으로 쳐주는 기간. 질문지가 "최근 2주 안에" 를 묻는 것과 맞춘다.
+DEFER_WINDOW_DAYS = 14
+
+#: 증상이 이만큼 이어지면 멈추는 것만으로 부족하다.
+PERSIST_VET_DAYS = 3
+
+#: 원인이 설명되면 지켜보는 항목들.
+#:
+#: 표로 뺀 이유는 **빠뜨리기 쉬워서**다. food_changed 가 실제로 그랬다 -
+#: 질문지에는 두 축에 다 있는데 interpret() 에 한 줄도 없어서, 보호자가
+#: "사료 바꿨어요" 라고 답해도 아무 일이 일어나지 않았다. 저장은 됐다.
+CAUSE_DEFERS: list[tuple[str, HealthAxis, dict[str, str]]] = [
+    ("shampoo_changed", HealthAxis.SKIN, {
+        "recent": "샴푸를 바꾸셨습니다 — 2주 더 지켜봅니다",
+        "old": "샴푸를 바꾸셨다고 하셨습니다",
+    }),
+    ("food_changed", HealthAxis.SKIN, {
+        # 식이 반응은 2~6주에 걸쳐 나타난다. 바꾸자마자 생긴 변화를
+        # 사료 탓으로 보기도, 아니라고 보기도 이르다. 그래서 지켜본다.
+        "recent": "사료·간식을 바꾸셨습니다 — 식이 반응은 2~6주에 걸쳐 나타나므로 지켜봅니다",
+        "old": "사료·간식을 바꾸셨다고 하셨습니다",
+    }),
+    ("env_exposure", HealthAxis.SKIN, {
+        "recent": "풀밭·흙에서 놀았다고 하셨습니다 — 접촉성 자극일 수 있어 2주 지켜봅니다",
+        "old": "풀밭·흙에서 놀았다고 하셨습니다",
+    }),
+]
+
+
 def interpret(context: Context) -> ContextEffect:
     """
     구조화된 답변을 처방 조정으로 바꾼다.
@@ -278,23 +333,58 @@ def interpret(context: Context) -> ContextEffect:
     if context.said_yes("eating_less"):
         eff.block_all = True
         eff.notes.append("밥을 잘 안 먹는다고 하셨습니다 — 원인이 확인될 때까지 영양제를 멈춥니다")
+        # **며칠째인지가 다르다.** 하루 덜 먹는 것과 사흘째 안 먹는 것은
+        # 같은 일이 아니다. 지속되면 멈추는 것만으로 부족하다.
+        if context.lasted("eating_less", PERSIST_VET_DAYS):
+            eff.vet_referral = True
+            eff.notes.append(
+                f"{context.days_since('eating_less')}일째 이어지고 있습니다 — 진료를 권합니다"
+            )
+        elif context.said_yes("food_changed") and not context.too_old(
+            "food_changed", DEFER_WINDOW_DAYS
+        ):
+            # 멈추는 건 그대로다. 다만 이유가 설명되면 보호자가 덜 불안하다.
+            eff.notes.append("새 사료에 적응하는 동안 덜 먹는 것은 흔한 일입니다")
 
     if context.said_yes("vomit"):
         eff.block_all = True
         eff.vet_referral = True
         eff.notes.append("구토·설사가 있다고 하셨습니다 — 영양제를 멈춥니다")
 
-    # 원인이 설명되는 변화는 처방하지 않고 지켜본다
-    if context.said_yes("shampoo_changed"):
-        eff.defer_axes.append(HealthAxis.SKIN)
-        eff.notes.append("샴푸를 바꾸셨습니다 — 2주 더 지켜봅니다")
-
-    if context.said_yes("env_exposure"):
-        eff.defer_axes.append(HealthAxis.SKIN)
-        eff.notes.append("풀밭·흙에서 놀았다고 하셨습니다 — 접촉성 자극일 수 있어 2주 지켜봅니다")
+    # 원인이 설명되는 변화는 처방하지 않고 지켜본다.
+    #
+    # **단, 최근 일이어야 설명이 된다.** 한 달 전에 바꾼 샴푸는 지금 가려움의
+    # 이유가 될 수 없다. 그걸로 유예를 걸면 진짜 신호를 덮는다.
+    # 시점을 말하지 않았으면 지금까지처럼 '최근' 으로 본다.
+    for key, axis, why in CAUSE_DEFERS:
+        if not context.said_yes(key):
+            continue
+        if context.too_old(key, DEFER_WINDOW_DAYS):
+            eff.notes.append(
+                f"{why['old']} ({context.days_since(key)}일 전) — "
+                "지금 변화의 설명으로 보기에는 오래돼 그대로 봅니다"
+            )
+            continue
+        eff.defer_axes.append(axis)
+        eff.notes.append(why["recent"])
 
     if context.said_yes("recent_bath"):
         eff.notes.append("최근 목욕·수영이 있었습니다 — 며칠 더 지켜봅니다")
+
+    # 센서가 못 보는 신호. **원인을 설명하지 않으므로 유예하지 않는다** -
+    # 지금 일어나는 일을 보호자가 알려준 것이고, 근거에 남겨야 화면이
+    # 설명된다. 묻기만 하고 아무 데도 안 쓰면 답할 이유가 없다.
+    if context.said_yes("ear_smell"):
+        eff.notes.append(
+            "귀에서 냄새가 난다고 하셨습니다 — 외이염의 이른 신호일 수 있습니다. "
+            "분비물이 보이면 진료를 받으세요"
+        )
+
+    if context.said_yes("stairs_avoid"):
+        eff.notes.append(
+            "계단·소파를 피한다고 하셨습니다 — 걸음 수로는 안 드러나는 신호라 "
+            "관절 근거에 함께 남깁니다"
+        )
 
     if context.said_yes("weather_cold"):
         eff.defer_axes.append(HealthAxis.MOBILITY)

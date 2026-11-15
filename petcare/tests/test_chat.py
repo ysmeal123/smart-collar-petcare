@@ -38,6 +38,19 @@ def skin_ds():
 # 추출
 # ---------------------------------------------------------------------------
 
+def said(ex) -> dict[str, str]:
+    """
+    시점 키(`*_days`)를 뺀 답변.
+
+    추출기는 시점이 의미 있는 key 마다 `<key>_days` 를 같이 내놓는다.
+    못 찾았으면 **빈 문자열**을 넣는다 - 지우지 않고 비워야 예전 메모의
+    "한 달 전" 이 오늘 답변에 들러붙지 않는다.
+
+    무엇을 알아들었는지만 보는 검사에서는 그 값이 방해가 된다.
+    """
+    return {k: v for k, v in ex.answers.items() if not k.endswith("_days")}
+
+
 def test_평범한_보고를_알아듣는다():
     cases = {
         "샴푸를 새로 바꿨어요": "shampoo_changed",
@@ -384,7 +397,7 @@ def test_LLM_이_실패해도_규칙이_받는다(monkeypatch):
 
     e = extract("토했어요")
     assert e.engine == "rules"
-    assert e.answers == {"vomit": "yes"}
+    assert said(e) == {"vomit": "yes"}
 
 
 def test_LLM_이_켜지면_그_결과를_쓴다(monkeypatch):
@@ -400,7 +413,7 @@ def test_LLM_이_켜지면_그_결과를_쓴다(monkeypatch):
 
     e = extract("어제부터 통 입에 안 대고, 윗집이 밤새 쿵쿵거렸어요")
     assert e.engine == "llm"
-    assert e.answers == {"eating_less": "yes", "noise": "yes"}
+    assert said(e) == {"eating_less": "yes", "noise": "yes"}
 
 
 def test_코드펜스가_붙어도_읽는다(monkeypatch):
@@ -413,7 +426,7 @@ def test_코드펜스가_붙어도_읽는다(monkeypatch):
         llm_mod, "_call_gemini",
         lambda *a, **k: '```json\n{"vomit": "yes"}\n```',
     )
-    assert extract("토했어요").answers == {"vomit": "yes"}
+    assert said(extract("토했어요")) == {"vomit": "yes"}
 
 
 def test_LLM_로도_용량을_올릴_수_없다(skin_ds, monkeypatch):
@@ -700,4 +713,4 @@ def test_거부가_정상_추출까지_지우지_않는다(monkeypatch):
     )
 
     e = extract("목욕은 했는데 토는 안 했어요")
-    assert e.answers == {"recent_bath": "yes"}
+    assert said(e) == {"recent_bath": "yes"}

@@ -122,7 +122,10 @@ def main() -> int:
         result = extract(text)
         if llm.enabled() and result.engine != "llm":
             fell_back += 1
-        got = set(result.answers)
+        # `<key>_days` 는 "며칠 전 일인가" 를 담는 딸린 값이다. 무엇을
+        # 알아들었는지를 재는 자리에서는 세지 않는다 - 세면 맞은 key 마다
+        # 오탐이 하나씩 붙어 점수가 반 토막 난다.
+        got = {k for k in result.answers if not k.endswith("_days")}
         hit = got & want
         tp += len(hit)
         fp += len(got - want)

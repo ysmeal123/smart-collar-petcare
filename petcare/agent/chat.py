@@ -180,7 +180,12 @@ def understood(note: Note, has_pending: bool = True) -> ChatTurn:
                     "그 밖의 변화는 수의사 선생님과 상의해 주세요.")
         return ChatTurn(role="agent", kind="understood", text=text)
 
-    words = [UNDERSTOOD_WORD.get(k, k) for k in note.understood]
+    # `*_days` 는 "며칠 전 일인가" 를 담는 딸린 값이다. 그 자체로 알아들은
+    # 내용이 아니라 수식어라서, 그대로 보여주면 내부 key 가 화면에 샌다.
+    words = [UNDERSTOOD_WORD.get(k, k) for k in note.understood
+             if not k.endswith("_days")]
+    if not words:
+        words = ["말씀하신 시점"]
     body = ", ".join(words)
     return ChatTurn(
         role="agent",
