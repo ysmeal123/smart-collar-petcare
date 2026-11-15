@@ -32,7 +32,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.petcare.data.Feeder
 import com.petcare.data.FeederStore
+import com.petcare.data.Bb
 import com.petcare.data.FeedingPlan
+import com.petcare.data.bbLine
 import com.petcare.data.MyDog
 import com.petcare.data.Notify
 import androidx.compose.ui.platform.LocalContext
@@ -84,13 +86,13 @@ fun FeederSheet(
     // 쓴다 - 경로마다 단위가 다르면 보호자가 틀린 양을 넣는 날이 온다.
     val fallback = remember {
         listOf(
-            Feeder.Slot(1, "omega3", "오메가3", "알", 10),
-            Feeder.Slot(2, "skin_barrier", "피부장벽", "알", 10),
-            Feeder.Slot(3, "joint", "관절", "알", 10),
-            Feeder.Slot(4, "food", "사료", "g", 300),
+            Feeder.Slot(1, "omega3", "오메가3", "알", Bb.MAX_TURNS),
+            Feeder.Slot(2, "skin_barrier", "피부장벽", "알", Bb.MAX_TURNS),
+            Feeder.Slot(3, "joint", "관절", "알", Bb.MAX_TURNS),
+            Feeder.Slot(4, "food", "사료", "g", Bb.FOOD_G),
         )
     }
-    val counts = remember { mutableStateListOf(1, 1, 1, 40) }
+    val counts = remember { mutableStateListOf(1, 1, 1, Bb.FOOD_G) }
 
     // 남은 사료 알림. 기준을 넘는 순간 한 번만 울린다 (권한은 메인 화면이 묻는다).
     val ctx = LocalContext.current
@@ -200,16 +202,23 @@ fun FeederSheet(
                         val amt = if (mg > 0) ps.first().copy(doseMg = mg).amount else "${n}알"
                         "${ps.firstOrNull()?.name ?: "${slot}번"} $amt"
                     } + listOfNotNull(if (dayFood > 0) "사료 ${dayFood}g" else null)
-                    Text(parts.joinToString(" · "), style = T.caption)
+                    Text("실제 계획 · " + parts.joinToString(" · "), style = T.caption)
+                    Spacer(Modifier.height(T.xxs))
+                    Text("시연 (비비탄 보정) · ${plan.bbLine}", style = T.captionStrong)
                     Spacer(Modifier.height(T.sm))
                     PrimaryPill(
-                        label = "오늘 계획대로 급여",
+                        label = "비비탄 보정으로 급여",
                         modifier = Modifier.fillMaxWidth(),
                         enabled = canSend,
                         onClick = {
                             val req = "plan-${System.currentTimeMillis()}"
                             send(
-                                { Feeder.dispensePlan(link, dayPellets, dayFood, req) },
+                                {
+                                    Feeder.dispensePlan(
+                                        link, Bb.turns(dayPellets),
+                                        if (dayFood > 0) Bb.FOOD_G else 0, req,
+                                    )
+                                },
                                 if (link.viaServer) "오늘 계획 전송 — 밥통이 곧 가져갑니다"
                                 else "오늘 계획 배출 시작",
                             )
@@ -223,7 +232,7 @@ fun FeederSheet(
             // --- 슬롯 ---------------------------------------------------------
             slots.forEachIndexed { i, s ->
                 // 사료는 그램이라 1씩 올리면 300까지 300번을 눌러야 한다.
-                val step = if (s.slot == Feeder.FOOD_SLOT) 10 else 1
+                val step = 1
                 SlotRow(
                     slot = s,
                     count = counts.getOrElse(i) { 1 },

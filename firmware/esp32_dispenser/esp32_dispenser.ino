@@ -159,10 +159,10 @@ struct Slot {
 
 Slot SLOTS[4] = {
   // 핀은 실물 배선 기준 (2026-11-01 확인). 슬롯 번호 = 모터 물리 위치.
-  {"omega3",       "오메가3", 13, 14, false, 200, 10, "알"},
-  {"skin_barrier", "피부장벽", 19, 27, false, 200, 10, "알"},
-  {"joint",        "관절",    25, 26, false, 200, 10, "알"},
-  {"food",         "사료",    32, 33, false, 200, 30, "회"},
+  {"omega3",       "오메가3", 13, 14, false, 200, 3, "알"},   // 시연: 최대 3회전
+  {"skin_barrier", "피부장벽", 19, 27, false, 200, 3, "알"},
+  {"joint",        "관절",    25, 26, false, 200, 3, "알"},
+  {"food",         "사료",    32, 33, false, 200, 3, "회"},
 };
 const int N_SLOTS = 4;
 
@@ -177,10 +177,13 @@ const int FOOD_SLOT = 3;
 //: 실물로 재야 한다 - /calibrate 로 1000펄스를 돌려 나온 양을 저울로
 //: 재고 1000/그램 을 넣는다. 지금 값으로는 120g 요청이 60g 이나 200g 이
 //: 될 수 있다.
-const float FOOD_STEPS_PER_G = 4.0f;
+//: 2026-11-15 시연 보정: 비비탄 기준 1회전(200펄스) ≈ 1.2 g → 약 167펄스/g.
+//: 실제 사료로 바꾸면 /calibrate 로 다시 잰다.
+const float FOOD_STEPS_PER_G = 200.0f / 1.2f;
 
 //: 한 번에 돌릴 사료 펄스 상한. 서버가 이상한 값을 보내도 통을 비우지 않는다.
-const int FOOD_STEPS_MAX = 4000;
+//: 시연: 사료도 최대 3회전. 넘는 요청은 거부한다(앱은 3 g 이하만 보낸다).
+const int FOOD_STEPS_MAX = 600;
 
 // 단위 사이 쉬는 시간. 알이 떨어질 틈을 준다.
 const unsigned long GAP_MS = 150;
@@ -708,7 +711,7 @@ float lastFoodG = -1;        // 마지막 배출에서 저울로 잰 사료 g (-
 //: 사료를 저울로 멈출 때 한 번에 돌리는 펄스. 작을수록 정확하고 느리다.
 const int FOOD_CHUNK = 40;
 //: 떨어지는 중인 사료 몫. 목표보다 이만큼 먼저 멈춘다.
-const float FOOD_EARLY_G = 2.0f;
+const float FOOD_EARLY_G = 0.3f;   // 비비탄 몇 g 단위라 2 g 일찍 멈추면 거의 안 나온다
 
 /**
  * 사료를 **저울을 보면서** 목표 g 까지 돌린다.
