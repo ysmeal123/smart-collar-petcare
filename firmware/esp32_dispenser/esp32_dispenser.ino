@@ -131,6 +131,8 @@ const int UPLOAD_WHEN = MAX_SAMPLES / 2;
 const unsigned long HIGH_US = 1600;
 //: 2026-11-10: 100 → 1800 → 8000. 세게 쳐서 아주 느리게 낮췄다 (한 바퀴 약 2초).
 const unsigned long LOW_US  = 3400;   // 2026-11-18: 8000 → 3400, 한 바퀴 약 2초 → 약 1.1초 ("좀 더 세게")
+//: 슬롯별 LOW 간격. 2번은 비비탄이 덜 나와서 조금 더 빠르게 (한 바퀴 약 0.9초).
+const unsigned long LOW_US_SLOT[4] = {LOW_US, 2400, LOW_US, LOW_US};
 
 //: 부드러운 출발. 첫 RAMP_STEPS 펄스 동안 RAMP_EXTRA_US 를 더 쉬었다가
 //: 0 까지 줄인다. 정지 상태에서 바로 최고속으로 치면 '툭' 하고 튄다.
@@ -693,7 +695,7 @@ static void turnSteps(int s, int steps) {
     unsigned long extra = 0;
     int left = min(i, steps - 1 - i);          // 출발과 멈춤 둘 다 부드럽게
     if (left < RAMP_STEPS) extra = RAMP_EXTRA_US * (RAMP_STEPS - left) / RAMP_STEPS;
-    delayMicroseconds(LOW_US + extra);
+    delayMicroseconds(LOW_US_SLOT[s] + extra);
   }
 }
 
@@ -709,7 +711,9 @@ static float readG(uint8_t times) { return SCALE_SIGN * scale.readWeight(times);
 float lastFoodG = -1;        // 마지막 배출에서 저울로 잰 사료 g (-1 = 못 잼)
 
 //: 사료를 저울로 멈출 때 한 번에 돌리는 펄스. 작을수록 정확하고 느리다.
-const int FOOD_CHUNK = 40;
+//: 2026-11-18: 40 → 한 번에 끝까지. 40펄스마다 멈췄다 출발해 사료가 끊겨 나왔다.
+//: shortcut: 시연(비비탄)은 무게로 멈출 일이 없어 쭉 돌리고 끝난 뒤만 잰다, 실제 사료로 바꾸면 40 정도로 되돌린다.
+const int FOOD_CHUNK = FOOD_STEPS_MAX;
 //: 떨어지는 중인 사료 몫. 목표보다 이만큼 먼저 멈춘다.
 const float FOOD_EARLY_G = 0.3f;   // 비비탄 몇 g 단위라 2 g 일찍 멈추면 거의 안 나온다
 
