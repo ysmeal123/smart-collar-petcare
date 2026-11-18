@@ -6,7 +6,7 @@
  * 모델: activity_cnn5.h (팀원이 학습. 5클래스 REST/WALK/RUN/VIGOROUS/SHAKE)
  *       원본 예제 activity_cnn5_live.ino 의 전처리·정규화를 그대로 옮겼다.
  * 우리 클래스: 0 쉬기 / 1 걷기 / 2 뛰기 / 3 털기
- *       **VIGOROUS(격한 활동)는 쓰지 않는다** — 넷 중에서 고르고, 격한 활동만 높으면 앞 판정을 유지한다.
+ *       VIGOROUS(격한 활동)는 따로 보이지 않고 뛰기에 합친다 (팀원 최신 예제와 같음).
  *
  * **전처리는 학습 때와 같아야 한다** (MU/SD, 100Hz, 2초 창, 자이로 바이어스).
  * 켤 때 2초 가만히 둔다 (자이로 바이어스 측정, 초록 깜빡임).
@@ -73,9 +73,9 @@ const int N_CLASSES = 4;
 const char* NAMES_KO[N_CLASSES] = {"쉬기", "걷기", "뛰기", "털기"};
 
 const int WIN = 200;                 // 100Hz × 2초
-//: 0.5초마다 판정. 창은 학습 때와 같은 2초라 모델에는 영향이 없고,
-//: 털기가 화면에 뜨기까지가 최대 0.5초 줄어든다 (추론은 약 4ms).
-const int HOP = 50;
+//: 1초마다 판정 (팀원 예제와 같다). 0.5초로 했을 때는 추론(60~90ms) 동안 밀린 샘플이
+//: 한꺼번에 읽혀 창 안의 시간 간격이 더 자주 흐트러졌다.
+const int HOP = 100;
 const unsigned long RAW_PERIOD_US = 10000;   // 100Hz
 
 LSM6DS3 imu(I2C_MODE, 0x6A);
@@ -91,8 +91,9 @@ float gbias[3] = {0, 0, 0};
 const float MU[2] = {1.2197f, 81.993f};      // 학습 때 정규화 (modelA5_final/params.json)
 const float SD[2] = {1.1606f, 201.3286f};
 const int N_MODEL = 5;                        // REST WALK RUN VIGOROUS SHAKE
-//: 모델 출력 → 우리 클래스. -1 = 버린다 (VIGOROUS, 격한 활동은 쓰지 않는다).
-const int MODEL_TO_OURS[N_MODEL] = {0, 1, 2, -1, 3};
+//: 모델 출력 → 우리 클래스. 팀원 최신 예제(activity_cnn5_live (1))와 같다:
+//: VIGOROUS 는 따로 보이지 않고 **뛰기에 확률을 더한다**. 버리면 인식이 나빴다(2026-11-18 실측 비교).
+const int MODEL_TO_OURS[N_MODEL] = {0, 1, 2, 2, 3};
 
 constexpr int kArenaSize = 40 * 1024;
 alignas(16) uint8_t tensorArena[kArenaSize];
@@ -101,7 +102,7 @@ TfLiteTensor* tin = nullptr;
 TfLiteTensor* tout = nullptr;
 
 // 1분 요약
-uint16_t minSec[3] = {0, 0, 0};      // 쉬기·걷기·뛰기 **반초** (판정 1회 = 0.5초)
+uint16_t minSec[3] = {0, 0, 0};      // 쉬기·걷기·뛰기 초 (판정 1회 = 1초)
 uint16_t minShake = 0;
 int lastClass = -1;
 unsigned long minuteStart = 0;
@@ -218,21 +219,7 @@ static bool runModel(float proba[4]) {
 
   // VIGOROUS 를 빼고 넷의 합으로 다시 나눈다.
   for (int c = 0; c < 4; c++) proba[c] = 0;
-  float sum = 0;
-  for (int i = 0; i < N_MODEL; i++) {
-    int o = MODEL_TO_OURS[i];
-    if (o < 0) continue;
-    proba[o] += p5[i];
-    sum += p5[i];
-  }
-  // 격한 활동만 높으면 넷이 거의 0 이다. 그대로 나누면 잡음이 판정이 되고,
-  // 다 0 이면 '쉬기 0.00' 으로 떨어진다 (2026-11-11 실측). 그때는 앞 판정을 유지한다.
-  static float last[4] = {1, 0, 0, 0};
-  if (sum < 0.2f) {
-    for (int c = 0; c < 4; c++) proba[c] = last[c];
-    return true;
-  }
-  for (int c = 0; c < 4; c++) last[c] = proba[c] /= sum;
+  for (int i = 0; i < N_MODEL; i++) proba[MODEL_TO_OURS[i]] += p5[i];
   return true;
 }
 
@@ -259,7 +246,7 @@ static void setupModel() {
   tin = interp->input(0);
   tout = interp->output(0);
   char line[96];
-  snprintf(line, sizeof line, "[모델] CNN 5클래스 준비됨 (텐서 %u바이트, VIGOROUS 제외)",
+  snprintf(line, sizeof line, "[모델] CNN 5클래스 준비됨 (텐서 %u바이트, VIGOROUS→뛰기)",
            (unsigned)interp->arena_used_bytes());
   Serial.println(line);
 }
@@ -283,24 +270,25 @@ void led(int cls) {
 
 // ---------------------------------------------------------------------------
 
+unsigned long dbgImuMax = 0, dbgBleMax = 0, dbgResets = 0;   // 샘플링 진단
+float dbgClsMs = 0, dbgModelMs = 0;
+
 void classifyAndPublish() {
   float proba[N_CLASSES] = {0};
+  unsigned long tm = micros();
   if (!runModel(proba)) return;
+  dbgModelMs = (micros() - tm) / 1000.0f;
   int cls = 0;
   for (int c = 1; c < N_CLASSES; c++) if (proba[c] > proba[cls]) cls = c;
 
-  // 시리얼
-  Serial.print(NAMES_KO[cls]);
-  Serial.print("  ");
-  Serial.print(proba[cls], 2);
-  Serial.print("  |");
-  for (int c = 0; c < N_CLASSES; c++) {
-    Serial.print(" ");
-    Serial.print(NAMES_KO[c]);
-    Serial.print(" ");
-    Serial.print(proba[c], 2);
-  }
-  Serial.println();
+  // 시리얼: 한 줄로 만들어 한 번에 보낸다. 조각조각 16번 보내면 USB 전송이 느려
+  // 그동안 센서 샘플이 밀렸다.
+  char line[120];
+  snprintf(line, sizeof line, "%s  %.2f  | %s %.2f %s %.2f %s %.2f %s %.2f",
+           NAMES_KO[cls], proba[cls],
+           NAMES_KO[0], proba[0], NAMES_KO[1], proba[1],
+           NAMES_KO[2], proba[2], NAMES_KO[3], proba[3]);
+  Serial.println(line);
 
   led(cls);
 
@@ -343,7 +331,7 @@ void classifyAndPublish() {
     //
     // 가장 큰 쪽에서 깎는다. 넘치는 양이 1~2초라 어느 쪽을 깎아도 비율은
     // 거의 그대로다.
-    uint16_t r = minSec[0] / 2, w = minSec[1] / 2, ru = minSec[2] / 2;
+    uint16_t r = minSec[0], w = minSec[1], ru = minSec[2];
     while (r + w + ru > 60) {
       if (r >= w && r >= ru)      r--;
       else if (w >= ru)           w--;
@@ -498,6 +486,9 @@ void setup() {
     Serial.println("[IMU] 시작 실패 — Sense 보드가 맞는지 확인하세요");
     while (true) { digitalWrite(LEDR, !digitalRead(LEDR)); delay(200); }
   }
+  // I2C 를 400kHz 로. 기본 100kHz 에서는 IMU 6축 읽기에 최대 9ms 가 걸려
+  // 블루투스까지 하면 100Hz(10ms)를 못 맞췄다 (80Hz 실측).
+  Wire1.setClock(400000);              // XIAO Sense 의 IMU 는 내부 버스 Wire1 에 있다
   Serial.println("[IMU] 준비됨");
 
   setupModel();
@@ -546,16 +537,33 @@ void setup() {
   minuteStart = millis();
 }
 
+
 void loop() {
   static unsigned long next = micros();
-  if (bleOk) {
-    BLE.poll();
-    serviceAck();
-    drain();
-  }
+  long slack = (long)(next - micros());
 
-  if ((long)(micros() - next) < 0) return;
+  // 다음 샘플까지 3ms 넘게 남았을 때만 블루투스 일을 한다.
+  // 센서 박자(100Hz)가 먼저다. 블루투스가 끼어들면 83~87Hz 로 밀려
+  // 2초 창이 2.35초가 되고, 팀원 예제(블루투스 없음)보다 인식이 나빴다 (2026-11-18 실측).
+  if (slack > 3000) {
+    if (bleOk) {
+      unsigned long t0 = micros();
+      BLE.poll();
+      serviceAck();
+      drain();
+      unsigned long d = micros() - t0;
+      if (d > dbgBleMax) dbgBleMax = d;
+    }
+    return;
+  }
+  if (slack > 0) return;
+
+  // 아주 크게(0.5초 넘게) 밀렸을 때만 박자를 새로 잡는다. 판정·전송으로 수십 ms
+  // 밀린 건 다음 샘플들이 따라잡아 '2초 = 200샘플' 을 지킨다. 50ms 로 두었을 때는
+  // 판정마다 버려져 85Hz 에 그쳤다.
+  if (-slack > 500000) { next = micros(); dbgResets++; }
   next += RAW_PERIOD_US;
+  unsigned long tImu = micros();
 
   float ax = imu.readFloatAccelX(), ay = imu.readFloatAccelY(), az = imu.readFloatAccelZ();
   float gx = imu.readFloatGyroX() - gbias[0];
@@ -563,12 +571,25 @@ void loop() {
   float gz = imu.readFloatGyroZ() - gbias[2];
   abuf[head] = sqrtf(ax * ax + ay * ay + az * az);
   gbuf[head] = sqrtf(gx * gx + gy * gy + gz * gz);
+  { unsigned long d = micros() - tImu; if (d > dbgImuMax) dbgImuMax = d; }
   head = (head + 1) % WIN;
   if (filled < WIN) filled++;
 
   if (filled == WIN && ++sinceLast >= HOP) {
     sinceLast = 0;
+    // 실제 샘플링 속도 확인용. 100Hz 근처여야 학습 때와 같다.
+    static unsigned long lastCls = 0;
+    unsigned long nowUs = micros();
+    if (lastCls) {
+      char hz[96];
+      snprintf(hz, sizeof hz, "[샘플] %.0fHz  imu %.1fms  ble %.1fms  판정 %.0fms(모델 %.0f)  재설정 %lu",
+               HOP * 1e6f / (nowUs - lastCls), dbgImuMax / 1000.0f, dbgBleMax / 1000.0f, dbgClsMs, dbgModelMs, dbgResets);
+      Serial.println(hz);
+      dbgImuMax = dbgBleMax = 0; dbgResets = 0;
+    }
+    lastCls = nowUs;
+    unsigned long tc = micros();
     classifyAndPublish();
-    next = micros();                 // 추론 시간만큼 밀린 것 보정 (원본 예제와 같다)
+    dbgClsMs = (micros() - tc) / 1000.0f;
   }
 }
