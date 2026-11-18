@@ -684,9 +684,13 @@ static void enableDrivers(bool on) {
 }
 
 /** 슬롯 하나를 지정 펄스만큼 돌린다. 간격은 busy-wait 로 정확하게. */
-static void turnSteps(int s, int steps) {
+//: 영양제 1알마다 먼저 뒤로 물리는 펄스 (50 = 1/4바퀴). 0 이면 끈다.
+//: 2026-11-18 실측: 손으로 살짝 반대로 돌렸다 앞으로 돌리면 비비탄이 잘 나왔다.
+const int JAM_BACK_STEPS = 50;
+
+static void turnSteps(int s, int steps, bool backward = false) {
   const Slot& sl = SLOTS[s];
-  digitalWrite(sl.dirPin, sl.reverse ? HIGH : LOW);
+  digitalWrite(sl.dirPin, (sl.reverse != backward) ? HIGH : LOW);
   delayMicroseconds(5);
   for (int i = 0; i < steps; i++) {
     digitalWrite(sl.stepPin, HIGH);
@@ -759,6 +763,10 @@ static void runJob() {
   } else {
     for (int s = 0; s < N_SLOTS && !stopReq; s++) {
       for (int u = 0; u < pendingUnits[s] && !stopReq; u++) {
+        if (JAM_BACK_STEPS > 0) {               // 살짝 뒤로 → 걸린 알이 풀린다
+          turnSteps(s, JAM_BACK_STEPS, true);
+          delay(30);
+        }
         turnSteps(s, SLOTS[s].stepsPerUnit);
         doneUnits[s]++;
         Serial.printf("[배출] %s %d/%d\n", SLOTS[s].name, doneUnits[s], pendingUnits[s]);
