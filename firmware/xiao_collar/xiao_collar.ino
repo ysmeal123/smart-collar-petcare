@@ -278,8 +278,21 @@ void classifyAndPublish() {
   unsigned long tm = micros();
   if (!runModel(proba)) return;
   dbgModelMs = (micros() - tm) / 1000.0f;
-  int cls = 0;
-  for (int c = 1; c < N_CLASSES; c++) if (proba[c] > proba[cls]) cls = c;
+  int raw = 0;
+  for (int c = 1; c < N_CLASSES; c++) if (proba[c] > proba[raw]) raw = c;
+
+  // 순간 오판을 걸러낸다. 쉬기·걷기·뛰기는 최근 3번 중 2번 이상 나온 것을 쓰고,
+  // 털기는 1~2초짜리라 기다리지 않고 바로 쓴다. 걷다가 1초만 '뛰기' 로 튀는 게
+  // 화면에 그대로 보이면 인식이 나빠 보였다.
+  static int hist[3] = {0, 0, 0};
+  hist[0] = hist[1]; hist[1] = hist[2]; hist[2] = raw;
+  int cls = raw;
+  if (raw != 3) {
+    for (int c = 0; c < 3; c++) {
+      int n = (hist[0] == c) + (hist[1] == c) + (hist[2] == c);
+      if (n >= 2) { cls = c; break; }
+    }
+  }
 
   // 시리얼: 한 줄로 만들어 한 번에 보낸다. 조각조각 16번 보내면 USB 전송이 느려
   // 그동안 센서 샘플이 밀렸다.
