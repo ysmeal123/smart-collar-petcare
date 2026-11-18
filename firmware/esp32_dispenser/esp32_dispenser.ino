@@ -130,9 +130,9 @@ const int UPLOAD_WHEN = MAX_SAMPLES / 2;
 // 검증된 펄스 모양 (esp32_spin 참고). HIGH 길게, LOW 짧게.
 const unsigned long HIGH_US = 1600;
 //: 2026-11-10: 100 → 1800 → 8000. 세게 쳐서 아주 느리게 낮췄다 (한 바퀴 약 2초).
-const unsigned long LOW_US  = 1800;   // 2026-11-18: 8000 → 3400 → 1800, 한 바퀴 약 0.7초 (비비탄이 잘 안 나와 "전부 세게")
+const unsigned long LOW_US  = 3400;   // 2026-11-18: 8000 → 3400 (1800 은 힘이 모자라 헛돌았다). 한 바퀴 약 1.1초
 //: 슬롯별 LOW 간격. 2번은 비비탄이 덜 나와서 조금 더 빠르게 (한 바퀴 약 0.9초).
-const unsigned long LOW_US_SLOT[4] = {LOW_US, 1300, LOW_US, LOW_US};   // 2번만 약 0.6초
+const unsigned long LOW_US_SLOT[4] = {LOW_US, 2400, LOW_US, LOW_US};   // 2번만 약 0.9초
 
 //: 부드러운 출발. 첫 RAMP_STEPS 펄스 동안 RAMP_EXTRA_US 를 더 쉬었다가
 //: 0 까지 줄인다. 정지 상태에서 바로 최고속으로 치면 '툭' 하고 튄다.
