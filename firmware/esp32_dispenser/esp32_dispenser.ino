@@ -130,9 +130,9 @@ const int UPLOAD_WHEN = MAX_SAMPLES / 2;
 // 검증된 펄스 모양 (esp32_spin 참고). HIGH 길게, LOW 짧게.
 const unsigned long HIGH_US = 1600;
 //: 2026-11-10: 100 → 1800 → 8000. 세게 쳐서 아주 느리게 낮췄다 (한 바퀴 약 2초).
-const unsigned long LOW_US  = 3400;   // 2026-11-18: 8000 → 3400 (1800 은 힘이 모자라 헛돌았다). 한 바퀴 약 1.1초
+const unsigned long LOW_US  = 100;    // 2026-11-18: 처음 속도로 되돌림 (한 바퀴 약 0.34초). 헛돌면 VREF 를 올리거나 3400 으로
 //: 슬롯별 LOW 간격. 2번은 비비탄이 덜 나와서 조금 더 빠르게 (한 바퀴 약 0.9초).
-const unsigned long LOW_US_SLOT[4] = {LOW_US, 2400, LOW_US, LOW_US};   // 2번만 약 0.9초
+const unsigned long LOW_US_SLOT[4] = {LOW_US, LOW_US, LOW_US, LOW_US};
 
 //: 부드러운 출발. 첫 RAMP_STEPS 펄스 동안 RAMP_EXTRA_US 를 더 쉬었다가
 //: 0 까지 줄인다. 정지 상태에서 바로 최고속으로 치면 '툭' 하고 튄다.
@@ -161,9 +161,9 @@ struct Slot {
 
 Slot SLOTS[4] = {
   // 핀은 실물 배선 기준 (2026-11-01 확인). 슬롯 번호 = 모터 물리 위치.
-  {"omega3",       "오메가3", 13, 14, false, 200, 3, "알"},   // 시연: 최대 3회전
-  {"skin_barrier", "피부장벽", 19, 27, false, 200, 3, "알"},
-  {"joint",        "관절",    25, 26, false, 200, 3, "알"},
+  {"omega3",       "오메가3", 13, 14, false, 600, 3, "알"},   // 시연: 1알 = 3바퀴(짧으면 안 나옴), 최대 3알
+  {"skin_barrier", "피부장벽", 19, 27, false, 600, 3, "알"},
+  {"joint",        "관절",    25, 26, false, 600, 3, "알"},
   {"food",         "사료",    32, 33, false, 200, 3, "회"},
 };
 const int N_SLOTS = 4;
