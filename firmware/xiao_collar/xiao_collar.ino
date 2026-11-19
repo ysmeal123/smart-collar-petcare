@@ -73,9 +73,9 @@ const int N_CLASSES = 4;
 const char* NAMES_KO[N_CLASSES] = {"쉬기", "걷기", "뛰기", "털기"};
 
 const int WIN = 200;                 // 100Hz × 2초
-//: 0.5초마다 판정. 다수결(3번)이 1.5초 안에 끝나 바뀌는 게 1초가량 빨라진다.
-//: 밀린 샘플은 따라잡기로 100Hz 를 지킨다 (2026-11-19, '좀 더 빨리 바뀌게').
-const int HOP = 50;
+//: 1초마다 판정 (팀원 예제와 같다). 0.5초로 했을 때는 추론(60~90ms) 동안 밀린 샘플이
+//: 한꺼번에 읽혀 창 안의 시간 간격이 더 자주 흐트러졌다.
+const int HOP = 100;
 const unsigned long RAW_PERIOD_US = 10000;   // 100Hz
 
 LSM6DS3 imu(I2C_MODE, 0x6A);
@@ -102,7 +102,7 @@ TfLiteTensor* tin = nullptr;
 TfLiteTensor* tout = nullptr;
 
 // 1분 요약
-uint16_t minSec[3] = {0, 0, 0};      // 쉬기·걷기·뛰기 **반초** (판정 1회 = 0.5초)
+uint16_t minSec[3] = {0, 0, 0};      // 쉬기·걷기·뛰기 초 (판정 1회 = 1초)
 uint16_t minShake = 0;
 int lastClass = -1;
 unsigned long minuteStart = 0;
@@ -344,7 +344,7 @@ void classifyAndPublish() {
     //
     // 가장 큰 쪽에서 깎는다. 넘치는 양이 1~2초라 어느 쪽을 깎아도 비율은
     // 거의 그대로다.
-    uint16_t r = minSec[0] / 2, w = minSec[1] / 2, ru = minSec[2] / 2;
+    uint16_t r = minSec[0], w = minSec[1], ru = minSec[2];
     while (r + w + ru > 60) {
       if (r >= w && r >= ru)      r--;
       else if (w >= ru)           w--;
