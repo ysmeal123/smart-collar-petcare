@@ -28,6 +28,7 @@ import androidx.compose.ui.unit.dp
 import com.petcare.data.AxisScore
 import com.petcare.data.DogTwin
 import com.petcare.data.FeedingPlan
+import com.petcare.data.bbLine
 import com.petcare.data.Meal
 import com.petcare.data.Question
 import com.petcare.data.Simulation
@@ -78,6 +79,11 @@ fun PlanCard(plan: FeedingPlan, onFeed: (() -> Unit)? = null, onWhy: () -> Unit)
         plan.meals.forEachIndexed { i, meal ->
             if (i > 0) Spacer(Modifier.height(T.xs))
             MealRow(meal)
+        }
+
+        if (plan.ready && !plan.escalated) {
+            Spacer(Modifier.height(T.sm))
+            Text("시연 (비비탄 보정) · ${plan.bbLine}", style = T.finePrint)
         }
 
         Spacer(Modifier.height(T.lg))

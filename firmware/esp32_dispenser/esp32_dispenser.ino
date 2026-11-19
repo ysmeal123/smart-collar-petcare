@@ -130,7 +130,9 @@ const int UPLOAD_WHEN = MAX_SAMPLES / 2;
 // 검증된 펄스 모양 (esp32_spin 참고). HIGH 길게, LOW 짧게.
 const unsigned long HIGH_US = 1600;
 //: 2026-11-10: 100 → 1800 → 8000. 세게 쳐서 아주 느리게 낮췄다 (한 바퀴 약 2초).
-const unsigned long LOW_US  = 8000;
+const unsigned long LOW_US  = 100;    // 2026-11-18: 처음 속도로 되돌림 (한 바퀴 약 0.34초). 헛돌면 VREF 를 올리거나 3400 으로
+//: 슬롯별 LOW 간격. 2번은 비비탄이 덜 나와서 조금 더 빠르게 (한 바퀴 약 0.9초).
+const unsigned long LOW_US_SLOT[4] = {LOW_US, LOW_US, LOW_US, LOW_US};
 
 //: 부드러운 출발. 첫 RAMP_STEPS 펄스 동안 RAMP_EXTRA_US 를 더 쉬었다가
 //: 0 까지 줄인다. 정지 상태에서 바로 최고속으로 치면 '툭' 하고 튄다.
@@ -159,10 +161,10 @@ struct Slot {
 
 Slot SLOTS[4] = {
   // 핀은 실물 배선 기준 (2026-11-01 확인). 슬롯 번호 = 모터 물리 위치.
-  {"omega3",       "오메가3", 13, 14, false, 200, 10, "알"},
-  {"skin_barrier", "피부장벽", 19, 27, false, 200, 10, "알"},
-  {"joint",        "관절",    25, 26, false, 200, 10, "알"},
-  {"food",         "사료",    32, 33, false, 200, 30, "회"},
+  {"omega3",       "오메가3", 13, 14, false, 600, 3, "알"},   // 시연: 1알 = 3바퀴(짧으면 안 나옴), 최대 3알
+  {"skin_barrier", "피부장벽", 19, 27, false, 600, 3, "알"},
+  {"joint",        "관절",    25, 26, false, 600, 3, "알"},
+  {"food",         "사료",    32, 33, false, 200, 3, "회"},
 };
 const int N_SLOTS = 4;
 
@@ -177,10 +179,13 @@ const int FOOD_SLOT = 3;
 //: 실물로 재야 한다 - /calibrate 로 1000펄스를 돌려 나온 양을 저울로
 //: 재고 1000/그램 을 넣는다. 지금 값으로는 120g 요청이 60g 이나 200g 이
 //: 될 수 있다.
-const float FOOD_STEPS_PER_G = 4.0f;
+//: 2026-11-15 시연 보정: 비비탄 기준 1회전(200펄스) ≈ 1.2 g → 약 167펄스/g.
+//: 실제 사료로 바꾸면 /calibrate 로 다시 잰다.
+const float FOOD_STEPS_PER_G = 200.0f / 1.2f;
 
 //: 한 번에 돌릴 사료 펄스 상한. 서버가 이상한 값을 보내도 통을 비우지 않는다.
-const int FOOD_STEPS_MAX = 4000;
+//: 시연: 사료도 최대 3회전. 넘는 요청은 거부한다(앱은 3 g 이하만 보낸다).
+const int FOOD_STEPS_MAX = 600;
 
 // 단위 사이 쉬는 시간. 알이 떨어질 틈을 준다.
 const unsigned long GAP_MS = 150;
@@ -679,9 +684,13 @@ static void enableDrivers(bool on) {
 }
 
 /** 슬롯 하나를 지정 펄스만큼 돌린다. 간격은 busy-wait 로 정확하게. */
-static void turnSteps(int s, int steps) {
+//: 영양제 1알마다 먼저 뒤로 물리는 펄스 (50 = 1/4바퀴). 0 이면 끈다.
+//: 2026-11-18 실측: 손으로 살짝 반대로 돌렸다 앞으로 돌리면 비비탄이 잘 나왔다.
+const int JAM_BACK_STEPS = 50;
+
+static void turnSteps(int s, int steps, bool backward = false) {
   const Slot& sl = SLOTS[s];
-  digitalWrite(sl.dirPin, sl.reverse ? HIGH : LOW);
+  digitalWrite(sl.dirPin, (sl.reverse != backward) ? HIGH : LOW);
   delayMicroseconds(5);
   for (int i = 0; i < steps; i++) {
     digitalWrite(sl.stepPin, HIGH);
@@ -690,7 +699,7 @@ static void turnSteps(int s, int steps) {
     unsigned long extra = 0;
     int left = min(i, steps - 1 - i);          // 출발과 멈춤 둘 다 부드럽게
     if (left < RAMP_STEPS) extra = RAMP_EXTRA_US * (RAMP_STEPS - left) / RAMP_STEPS;
-    delayMicroseconds(LOW_US + extra);
+    delayMicroseconds(LOW_US_SLOT[s] + extra);
   }
 }
 
@@ -706,9 +715,11 @@ static float readG(uint8_t times) { return SCALE_SIGN * scale.readWeight(times);
 float lastFoodG = -1;        // 마지막 배출에서 저울로 잰 사료 g (-1 = 못 잼)
 
 //: 사료를 저울로 멈출 때 한 번에 돌리는 펄스. 작을수록 정확하고 느리다.
-const int FOOD_CHUNK = 40;
+//: 2026-11-18: 40 → 한 번에 끝까지. 40펄스마다 멈췄다 출발해 사료가 끊겨 나왔다.
+//: shortcut: 시연(비비탄)은 무게로 멈출 일이 없어 쭉 돌리고 끝난 뒤만 잰다, 실제 사료로 바꾸면 40 정도로 되돌린다.
+const int FOOD_CHUNK = FOOD_STEPS_MAX;
 //: 떨어지는 중인 사료 몫. 목표보다 이만큼 먼저 멈춘다.
-const float FOOD_EARLY_G = 2.0f;
+const float FOOD_EARLY_G = 0.3f;   // 비비탄 몇 g 단위라 2 g 일찍 멈추면 거의 안 나온다
 
 /**
  * 사료를 **저울을 보면서** 목표 g 까지 돌린다.
@@ -752,6 +763,10 @@ static void runJob() {
   } else {
     for (int s = 0; s < N_SLOTS && !stopReq; s++) {
       for (int u = 0; u < pendingUnits[s] && !stopReq; u++) {
+        if (JAM_BACK_STEPS > 0) {               // 살짝 뒤로 → 걸린 알이 풀린다
+          turnSteps(s, JAM_BACK_STEPS, true);
+          delay(30);
+        }
         turnSteps(s, SLOTS[s].stepsPerUnit);
         doneUnits[s]++;
         Serial.printf("[배출] %s %d/%d\n", SLOTS[s].name, doneUnits[s], pendingUnits[s]);

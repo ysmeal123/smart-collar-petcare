@@ -701,3 +701,11 @@ def test_거부가_정상_추출까지_지우지_않는다(monkeypatch):
 
     e = extract("목욕은 했는데 토는 안 했어요")
     assert e.answers == {"recent_bath": "yes"}
+
+
+def test_아니요라고_답하면_확인_문장도_아니요다():
+    from datetime import datetime
+    from agent.chat import Note, understood
+    t = understood(Note(text="안 바꿨어요", at=datetime.now(),
+                        understood={"shampoo_changed": "no"}))
+    assert "(아니요)" in t.text

@@ -106,6 +106,45 @@ data class Question(
 }
 
 @Serializable
+/**
+ * 시연용 비비탄 보정.
+ *
+ * 시연에서는 영양제·사료 대신 비비탄(0.12 g)을 쓴다. 원판 1회전 ≈ 비비탄 10개 ≈ 1.2 g.
+ * 실제 계획(오메가3 10알 · 사료 180 g)을 그대로 돌리면 몇 분이 걸리므로,
+ * 슬롯마다 **최대 3회전** 안에서 비율을 유지해 줄인다.
+ * shortcut: 시연 전용 축소, 실제 영양제·사료를 넣으면 이 보정을 빼고 계획 그대로 보낸다.
+ */
+object Bb {
+    const val G_PER_TURN = 1.2
+    const val MAX_TURNS = 3
+    /** 사료 보정값. 밥통이 1 g = 167펄스(1회전 = 1.2 g)로 보정돼 있어 3 g ≈ 2.5회전. */
+    const val FOOD_G = 3
+
+    /** 슬롯별 하루 알 수 → 회전 수 (가장 많은 슬롯이 3회전, 나머지는 비율, 최소 1). */
+    fun turns(day: Map<Int, Int>): Map<Int, Int> {
+        val most = day.values.maxOrNull() ?: return emptyMap()
+        return day.mapValues { (_, c) -> ((c * MAX_TURNS + most / 2) / most).coerceIn(1, MAX_TURNS) }
+    }
+
+    fun grams(turns: Int): String = String.format(java.util.Locale.US, "%.1fg", turns * G_PER_TURN)
+}
+
+/** 하루 슬롯별 알 수. 끼니에 나뉜 것을 더한다. */
+val FeedingPlan.dayPellets: Map<Int, Int>
+    get() = meals.flatMap { it.pellets }.groupBy { it.slot }
+        .mapValues { (_, ps) -> ps.sumOf { it.count } }.filterValues { it > 0 }
+
+/** 시연(비비탄 보정) 한 줄. 예: "오메가3 3회전 3.6g · 피부장벽 1회전 1.2g · 사료 3g" */
+val FeedingPlan.bbLine: String
+    get() {
+        val names = meals.flatMap { it.pellets }.associate { it.slot to it.name }
+        return (Bb.turns(dayPellets).toSortedMap().map { (s, t) ->
+            "${names[s] ?: "${s}번"} ${t}회전 ${Bb.grams(t)}"
+        } + listOfNotNull(if (totalFoodG > 0) "사료 ${Bb.FOOD_G}g" else null))
+            .joinToString(" · ")
+    }
+
+@Serializable
 data class FeedingPlan(
     @SerialName("dog_name") val dogName: String = "",
     val date: String = "",

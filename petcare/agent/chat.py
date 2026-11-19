@@ -180,7 +180,11 @@ def understood(note: Note, has_pending: bool = True) -> ChatTurn:
                     "그 밖의 변화는 수의사 선생님과 상의해 주세요.")
         return ChatTurn(role="agent", kind="understood", text=text)
 
-    words = [UNDERSTOOD_WORD.get(k, k) for k in note.understood]
+    # 값을 같이 말한다. '아니요' 를 '바꾸셨다' 로만 말하면 정반대가 된다.
+    words = [
+        UNDERSTOOD_WORD.get(k, k) + ("" if v == "yes" else f" ({_pretty(v)})")
+        for k, v in note.understood.items()
+    ]
     body = ", ".join(words)
     return ChatTurn(
         role="agent",
@@ -198,7 +202,9 @@ def plan_summary(plan) -> ChatTurn:
     elif pellets == 0:
         text = f"오늘은 사료 {plan.total_food_g}g만 드립니다. 영양제는 없어요."
     else:
-        text = (f"오늘은 사료 {plan.total_food_g}g과 영양제 {pellets}알을 "
+        mg = sum(getattr(p, "dose_mg", 0) for m in plan.meals for p in m.pellets)
+        amount = f"{mg:g}mg" if mg else f"{pellets}알"     # 화면 계획 카드와 같은 단위
+        text = (f"오늘은 사료 {plan.total_food_g}g과 영양제 {amount}을 "
                 f"나눠 드립니다.")
     return ChatTurn(role="agent", kind="plan", text=text)
 
