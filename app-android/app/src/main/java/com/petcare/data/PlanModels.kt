@@ -115,7 +115,7 @@ data class Question(
  */
 object Bb {
     /** 슬롯별 1바퀴당 g. 2026-11-22 밥통 저울 실측 (3바퀴 × 3회 평균). 3번은 모터 고장이라 없음. */
-    val G_PER_TURN = mapOf(1 to 0.27, 2 to 0.96, 4 to 0.92)
+    val G_PER_TURN = mapOf(1 to 0.51, 2 to 0.96, 4 to 0.92)
     const val TURNS_PER_PELLET = 3
     const val MAX_PELLETS = 3
     /** 사료 요청 g. 펌웨어가 1 g = 167펄스(=1.2 g/바퀴 가정)로 돌려서 3 g 요청 = 2.5바퀴. */
