@@ -114,9 +114,9 @@ data class Question(
  * shortcut: 시연 전용 축소, 실제 영양제·사료를 넣으면 이 보정을 빼고 계획 그대로 보낸다.
  */
 object Bb {
-    /** 슬롯별 1바퀴당 g. 2026-11-22 밥통 저울 실측 평균 (3바퀴씩, 1번은 통을 툭툭 치며 3회 · 2·4번 6회). 3번은 모터 고장이라 없음.
+    /** 슬롯별 1바퀴당 g. 2026-11-22 밥통 저울 실측 평균 (3바퀴씩, 1번은 통을 툭툭 치며 6회 · 2·4번 6회). 3번은 모터 고장이라 없음.
      *  shortcut: 1번은 통 입구에서 막혀 시연 때 통을 툭툭 쳐야 이 값이 나온다 (안 치면 평균 0.66, ±50%), 입구를 고치면 다시 잰다. */
-    val G_PER_TURN = mapOf(1 to 0.89, 2 to 0.94, 4 to 0.96)
+    val G_PER_TURN = mapOf(1 to 0.97, 2 to 0.94, 4 to 0.96)
     const val TURNS_PER_PELLET = 3
     const val MAX_PELLETS = 3
     /** 사료 요청 g. 펌웨어가 1 g = 167펄스(=1.2 g/바퀴 가정)로 돌려서 3 g 요청 = 2.5바퀴. */
@@ -143,7 +143,7 @@ val FeedingPlan.dayPellets: Map<Int, Int>
     get() = meals.flatMap { it.pellets }.groupBy { it.slot }
         .mapValues { (_, ps) -> ps.sumOf { it.count } }.filterValues { it > 0 }
 
-/** 시연(비비탄 보정) 한 줄. 예: "오메가3 3알 8.0g · 피부장벽 1알 2.8g · 사료 2.4g" */
+/** 시연(비비탄 보정) 한 줄. 예: "오메가3 3알 8.7g · 피부장벽 1알 2.8g · 사료 2.4g" */
 val FeedingPlan.bbLine: String
     get() {
         val names = meals.flatMap { it.pellets }.associate { it.slot to it.name }
