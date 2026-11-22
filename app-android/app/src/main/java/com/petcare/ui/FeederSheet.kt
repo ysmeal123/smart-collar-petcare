@@ -86,9 +86,9 @@ fun FeederSheet(
     // 쓴다 - 경로마다 단위가 다르면 보호자가 틀린 양을 넣는 날이 온다.
     val fallback = remember {
         listOf(
-            Feeder.Slot(1, "omega3", "오메가3", "알", Bb.MAX_TURNS),
-            Feeder.Slot(2, "skin_barrier", "피부장벽", "알", Bb.MAX_TURNS),
-            Feeder.Slot(3, "joint", "관절", "알", Bb.MAX_TURNS),
+            Feeder.Slot(1, "omega3", "오메가3", "알", Bb.MAX_PELLETS),
+            Feeder.Slot(2, "skin_barrier", "피부장벽", "알", Bb.MAX_PELLETS),
+            Feeder.Slot(3, "joint", "관절", "알", Bb.MAX_PELLETS),
             Feeder.Slot(4, "food", "사료", "g", Bb.FOOD_G),
         )
     }
@@ -215,7 +215,7 @@ fun FeederSheet(
                             send(
                                 {
                                     Feeder.dispensePlan(
-                                        link, Bb.turns(dayPellets),
+                                        link, Bb.pellets(dayPellets),
                                         if (dayFood > 0) Bb.FOOD_G else 0, req,
                                     )
                                 },
