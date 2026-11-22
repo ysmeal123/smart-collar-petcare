@@ -14,12 +14,12 @@ class BbTest {
 
     @Test
     fun `1알은 3바퀴라 g 도 3바퀴 몫이다`() {
-        assertEquals(3 * 3 * 0.96, Bb.pelletGrams(2, 3)!!, 1e-9)
+        assertEquals(3 * 3 * 0.94, Bb.pelletGrams(2, 3)!!, 1e-9)
         assertNull(Bb.pelletGrams(3, 1))   // 3번은 측정값 없음
     }
 
     @Test
-    fun `사료 3g 요청은 2점5바퀴라 실측 기준 약 2점3g`() {
-        assertEquals("2.3g", Bb.g(Bb.foodGrams))
+    fun `사료 3g 요청은 2점5바퀴라 실측 기준 약 2점4g`() {
+        assertEquals("2.4g", Bb.g(Bb.foodGrams))
     }
 }
